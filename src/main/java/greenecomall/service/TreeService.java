@@ -772,9 +772,20 @@ public class TreeService {
 
         savePosition(realUser, parent, level, stage, position);
 
-        // Re-place the displaced accelerator starting from the parent so it lands in the
-        // sibling slot (pos 2 if pos 1 was taken), not one tier deeper under the real user.
-        bfsPlaceAccelerator(accOwner, parent, level);
+        // Walk UP one level so BFS starts from the grandparent (e.g. lola3) rather than
+        // the parent (e.g. шщщщщщщщщ1). After the real user fills the sibling slot the
+        // parent's tier is full, so BFS from the parent would go deeper. Starting from
+        // the grandparent lets BFS find the weakest sibling branch (e.g. шщщщщщщщщ2 with
+        // 0 children) before diving into the occupied subtree.
+        User bfsRoot = parent;
+        Optional<TreePosition> parentPos = treePositionRepo.findByUserAndLevelAndStage(parent, level, 1);
+        if (parentPos.isPresent() && parentPos.get().getParent() != null) {
+            User grandParent = parentPos.get().getParent();
+            if (grandParent.getRole() != greenecomall.enums.Role.ADMIN) {
+                bfsRoot = userRepository.findById(grandParent.getId()).orElse(grandParent);
+            }
+        }
+        bfsPlaceAccelerator(accOwner, bfsRoot, level);
     }
 
     private void savePosition(User user, User parent, int level, int stage, int position) {

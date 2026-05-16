@@ -998,16 +998,31 @@ public class TreeService {
             return;
         }
 
-        // Normal ancestor path: walk UP the Stage-2 fixed-partner chain to the topmost host
-        // so findWeakestStage2Target searches the full tree (catches 1-partner nodes higher up).
-        User searchRoot = ancestor;
+        // Normal ancestor path: build the chain from ancestor up to the topmost Stage-2 host,
+        // then pick the TOPMOST node in that chain that is still at Stage 2 with a free slot.
+        // Walking the full chain top-down preserves the "fill from top" rule while staying
+        // within the same family branch (avoiding cross-branch pollution like lola2 vs lola6).
+        List<User> chain = new ArrayList<>();
+        chain.add(ancestor);
         User hostAbove = userRepository.findStage2HostOf(ancestor).orElse(null);
         while (hostAbove != null && hostAbove.getRole() != greenecomall.enums.Role.ADMIN) {
-            searchRoot = hostAbove;
-            hostAbove = userRepository.findStage2HostOf(searchRoot).orElse(null);
+            chain.add(hostAbove);
+            hostAbove = userRepository.findStage2HostOf(chain.get(chain.size() - 1)).orElse(null);
         }
 
-        User target = findWeakestStage2Target(searchRoot, level);
+        // Prefer the highest node in the chain that is at Stage 2 with a free slot.
+        User target = null;
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            User node = userRepository.findById(chain.get(i).getId()).orElse(chain.get(i));
+            if (node.getCurrentLevel() == level && node.getCurrentStage() == 2) {
+                int slots = (node.getFixedPartnerLeft()  != null ? 1 : 0)
+                          + (node.getFixedPartnerRight() != null ? 1 : 0);
+                if (slots < 2) { target = node; break; }
+            }
+        }
+
+        // No Stage-2 node with free slot in the chain — search within the ancestor's subtree.
+        if (target == null) target = findWeakestStage2Target(ancestor, level);
         if (target == null) {
             placeUnderFastStartGraduate(user, level);
             return;

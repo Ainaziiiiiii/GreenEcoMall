@@ -36,6 +36,7 @@ public class AuthService {
     private final JwtUtil jwtUtil;
     private final PasswordEncoder passwordEncoder;
     private final SmsService smsService;
+    private final PaymentService paymentService;
 
     private static final String REFERRAL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     private static final BigDecimal FEE_STANDARD   = new BigDecimal("1");
@@ -46,6 +47,9 @@ public class AuthService {
 
     @org.springframework.beans.factory.annotation.Value("${app.admin.phone:+996700000000}")
     private String adminPhone;
+
+    @Value("${app.payment.auto-approve:false}")
+    private boolean autoApprovePayment;
 
     @Transactional
     public LocalDateTime sendOtp(String phone, String clientIp) {
@@ -120,6 +124,14 @@ public class AuthService {
                 .status(PaymentStatus.PENDING)
                 .build();
         payment = paymentRepository.save(payment);
+
+        if (autoApprovePayment) {
+            payment.setStatus(PaymentStatus.SUCCESS);
+            payment.setPaidAt(LocalDateTime.now());
+            paymentRepository.save(payment);
+            paymentService.activateUserById(user.getId());
+            log.info("Auto-approved payment for user {}", user.getId());
+        }
 
         return new RegisterResponse(
                 user.getId(),

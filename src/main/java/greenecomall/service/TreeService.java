@@ -1296,7 +1296,19 @@ public class TreeService {
             //    accelerators concentrate in the same matrix rather than scattering.
             User stackParent = findExistingAcceleratorParent(user, level);
             if (stackParent != null) {
-                bfsPlaceAccelerator(user, stackParent, level);
+                // Walk up one level so BFS covers siblings of stackParent within the same matrix.
+                // Without this, BFS from Атай1 never reaches Атай2 (its sibling, not descendant).
+                Optional<TreePosition> stackParentPos = treePositionRepo.findByUserAndLevelAndStage(stackParent, level, 1);
+                User bfsRoot = stackParent;
+                if (stackParentPos.isPresent() && stackParentPos.get().getParent() != null) {
+                    User grandparent = userRepository.findById(stackParentPos.get().getParent().getId()).orElse(null);
+                    if (grandparent != null
+                            && grandparent.getRole() != greenecomall.enums.Role.ADMIN
+                            && canAcceleratorBeCleanedUp(grandparent, level)) {
+                        bfsRoot = grandparent;
+                    }
+                }
+                bfsPlaceAccelerator(user, bfsRoot, level);
             } else {
                 // 3. No accelerators anywhere yet — place in own team, left→right BFS.
                 placeInOwnTeamLeftToRight(user, level, directChildren);

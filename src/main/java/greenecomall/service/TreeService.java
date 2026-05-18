@@ -1877,9 +1877,9 @@ public class TreeService {
                             childStatus = advanced ? StageStatus.COMPLETED : childPos.getStageStatus();
                         }
                         childNodes.add(TreeNodeResponse.builder()
-                                .userId(accel ? null : childPos.getUser().getId())
-                                .name(accel ? null : childPos.getUser().getFirstName() + " " + childPos.getUser().getLastName())
-                                .initials(accel ? null : initials(childPos.getUser()))
+                                .userId(childPos.getUser().getId())
+                                .name(childPos.getUser().getFirstName() + " " + childPos.getUser().getLastName())
+                                .initials(initials(childPos.getUser()))
                                 .position(childPos.getPosition())
                                 .isAccelerator(accel)
                                 .stageStatus(childStatus)

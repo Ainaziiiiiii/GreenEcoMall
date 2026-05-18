@@ -1294,22 +1294,19 @@ public class TreeService {
      * accelerators exist anywhere yet.
      */
     private void placeInOwnTeamLeftToRight(User user, int level, List<TreePosition> directChildren) {
-        // Walk UP one level in the Stage-1 tree and run BFS from there.
-        // BFS is level-by-level, so it will find the weakest (fewest children, leftmost)
-        // node across ALL sibling branches before diving into the placer's own dense subtree.
-        Optional<TreePosition> myPos = treePositionRepo.findByUserAndLevelAndStage(user, level, 1);
-        if (myPos.isPresent() && myPos.get().getParent() != null) {
-            User parent = myPos.get().getParent();
-            if (parent.getRole() != greenecomall.enums.Role.ADMIN) {
-                User freshParent = userRepository.findById(parent.getId()).orElse(parent);
-                if (hasFreeSlotsInSubTree(freshParent, level)) {
-                    bfsPlaceAccelerator(user, freshParent, level);
-                    return;
-                }
-            }
+        // Walk UP to the HIGHEST ancestor that still has any free Stage-1 slot in its subtree,
+        // then BFS from there. This way the accelerator lands in the globally weakest branch
+        // (shallowest = closest to root, leftmost in BFS order) regardless of how many levels
+        // separate the placer from that branch.
+        // Example: if Baka4 is 2 BFS levels above where the placer sits, starting BFS from
+        // the placer's parent would never reach Baka4; starting from their common ancestor does.
+        User bfsRoot = findHighestAncestorWithFreeSlots(user, level);
+        if (bfsRoot != null) {
+            bfsPlaceAccelerator(user, bfsRoot, level);
+            return;
         }
 
-        // Fallback: placer is the root or parent has no free slots — search own subtree left→right
+        // No ancestor above (user is the root of the Stage-1 tree) — search own subtree left→right
         for (int side : new int[]{1, 2}) {
             Optional<TreePosition> sideChild = directChildren.stream()
                     .filter(c -> c.getPosition() == side && !c.getIsAccelerator())
@@ -1356,6 +1353,34 @@ public class TreeService {
             parent = parentPos.get().getParent();
         }
         return null;
+    }
+
+    /**
+     * Walks UP the Stage-1 parent chain and returns the HIGHEST (topmost) non-ADMIN ancestor
+     * whose subtree still has at least one free Stage-1 slot.
+     * BFS from this ancestor finds the globally weakest (shallowest, leftmost) free position
+     * across ALL branches — including siblings that are 2+ hops above the placer.
+     */
+    private User findHighestAncestorWithFreeSlots(User user, int level) {
+        Set<UUID> visited = new HashSet<>();
+        Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(user, level, 1);
+        if (pos.isEmpty() || pos.get().getParent() == null) return null;
+
+        User highest = null;
+        User parent = pos.get().getParent();
+        while (parent != null && visited.add(parent.getId())) {
+            User fresh = userRepository.findById(parent.getId()).orElse(null);
+            if (fresh == null || fresh.getRole() == greenecomall.enums.Role.ADMIN) break;
+
+            if (hasFreeSlotsInSubTree(fresh, level)) {
+                highest = fresh; // keep climbing — want the topmost ancestor with free slots
+            }
+
+            Optional<TreePosition> parentPos = treePositionRepo.findByUserAndLevelAndStage(fresh, level, 1);
+            if (parentPos.isEmpty() || parentPos.get().getParent() == null) break;
+            parent = parentPos.get().getParent();
+        }
+        return highest;
     }
 
     /**

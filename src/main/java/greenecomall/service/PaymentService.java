@@ -60,6 +60,17 @@ public class PaymentService {
 
     @Transactional
     public QrResponse createQr(User user) {
+        // If the user is already active (e.g. auto-approved in dev), skip the QR flow entirely.
+        if (user.getAccountStatus() == AccountStatus.ACTIVE) {
+            Payment paid = paymentRepository
+                    .findFirstByUserAndTypeAndStatusOrderByCreatedAtDesc(
+                            user, PaymentType.ENTRY_FEE, PaymentStatus.SUCCESS)
+                    .orElse(null);
+            UUID pid = paid != null ? paid.getId() : null;
+            String txn = paid != null ? paid.getFinikTransactionId() : null;
+            return new QrResponse("ALREADY_PAID", null, pid, txn);
+        }
+
         // Phone must be verified via OTP after account registration (steps 2-3)
         // In test mode (SMS disabled) skip this check — developer can still go through OTP via logs
         if (smsEnabled) {

@@ -1040,8 +1040,10 @@ public class TreeService {
      * (position 1→fixedLeft, position 2→fixedRight) as the completer — ensuring
      * that right-branch Stage-1 graduates land in the right-branch Stage-2 subtree.
      *
-     * Example: Омурбек2 is Ainazik's RIGHT (position 2) child in Stage-1.
-     * Ainazik is Stage-3 with fixedRight=Омурбек5 → returns Омурбек5.
+     * Example: Шесть2 is Ainazik's RIGHT (position 2) child in Stage-1.
+     * Ainazik is Stage-3. Шесть6 (also right branch) ended up in fixedPartnerLeft due to
+     * race timing. We detect this by walking UP the Stage-1 tree for each partner and
+     * checking which one shares the same tier-1 branch side as the completer.
      */
     private User findBranchAlignedStage2Anchor(User user, int level) {
         Set<UUID> visited = new HashSet<>();
@@ -1058,8 +1060,12 @@ public class TreeService {
             if (fresh.getCurrentLevel() == level && fresh.getCurrentStage() >= 3) {
                 Optional<TreePosition> childPos = treePositionRepo.findByUserAndLevelAndStage(child, level, 1);
                 if (childPos.isPresent()) {
-                    int side = childPos.get().getPosition(); // 1=left, 2=right
-                    User partner = (side == 1) ? fresh.getFixedPartnerLeft() : fresh.getFixedPartnerRight();
+                    int side = childPos.get().getPosition(); // which direct child of `fresh` is our ancestor
+                    // Find the fixed partner who is physically on the SAME branch side.
+                    // We cannot use slot position (left/right) directly because a right-branch
+                    // completer may have taken the left slot due to race timing (e.g. Шесть6 is
+                    // in the right branch but filled fixedPartnerLeft first).
+                    User partner = findPartnerOnSameSide(fresh, side, level);
                     if (partner != null && findWeakestStage2Target(partner, level) != null) {
                         return partner;
                     }
@@ -1071,6 +1077,39 @@ public class TreeService {
             parent = parentPos.map(TreePosition::getParent).orElse(null);
         }
         return null;
+    }
+
+    /**
+     * Returns the fixed partner of `host` who is physically in the same Stage-1 branch
+     * (side 1=left / 2=right) as the completer.
+     * Walks the Stage-1 ancestry of each partner up to `host` to find which side they belong to.
+     */
+    private User findPartnerOnSameSide(User host, int side, int level) {
+        for (User partner : new User[]{host.getFixedPartnerLeft(), host.getFixedPartnerRight()}) {
+            if (partner == null) continue;
+            int partnerSide = getStage1SideUnder(host, partner, level);
+            if (partnerSide == side) return partner;
+        }
+        return null;
+    }
+
+    /**
+     * Walks the Stage-1 parent chain from `user` upward until it finds a node whose
+     * direct parent is `ancestor`. Returns that node's position (1 or 2) under ancestor,
+     * or 0 if `user` is not in `ancestor`'s Stage-1 subtree.
+     */
+    private int getStage1SideUnder(User ancestor, User user, int level) {
+        Set<UUID> visited = new HashSet<>();
+        User cur = user;
+        while (cur != null && visited.add(cur.getId())) {
+            Optional<TreePosition> p = treePositionRepo.findByUserAndLevelAndStage(cur, level, 1);
+            if (p.isEmpty()) break;
+            User par = p.get().getParent();
+            if (par == null) break;
+            if (par.getId().equals(ancestor.getId())) return p.get().getPosition();
+            cur = par;
+        }
+        return 0;
     }
 
     private void placeAsFixedPartner(User user, User target, int level) {

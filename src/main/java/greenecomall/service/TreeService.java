@@ -58,8 +58,11 @@ public class TreeService {
         User directParent = bfsPlace(inviter, newUser, level, 1);
 
         if (directParent == null) {
-            throw new IllegalStateException(
-                    "BFS could not place user " + newUser.getId() + " in inviter " + inviter.getId() + " tree");
+            // BFS found no free slot — user is activated but has no tree position.
+            // The admin /repair/missing-positions endpoint can fix this without data loss.
+            log.error("BFS could not place user {} in inviter {} tree — user activated but position missing",
+                    newUser.getId(), inviter.getId());
+            return;
         }
 
         // Check Stage 1 completion for the placement node and up to 2 ancestors —
@@ -1276,10 +1279,7 @@ public class TreeService {
      * returned null and stacking never worked.
      */
     private User findExistingAcceleratorParent(User placer, int level) {
-        return treePositionRepo.findAll().stream()
-                .filter(tp -> Boolean.TRUE.equals(tp.getIsAccelerator()))
-                .filter(tp -> tp.getLevel() == level && tp.getStage() == 1)
-                .filter(tp -> !tp.getUser().getId().equals(placer.getId()))
+        return treePositionRepo.findAcceleratorsByLevelExcluding(level, placer.getId()).stream()
                 .map(TreePosition::getParent)
                 .filter(java.util.Objects::nonNull)
                 .filter(parent -> canAcceleratorBeCleanedUp(parent, level))
@@ -1319,8 +1319,15 @@ public class TreeService {
                 return;
             }
         }
-        // Both branches full — place directly as own child
-        int freeSide = directChildren.stream().noneMatch(c -> c.getPosition() == 1) ? 1 : 2;
+        // Both branches full — place directly as own child (in whichever slot is empty)
+        boolean pos1Free = directChildren.stream().noneMatch(c -> c.getPosition() == 1);
+        boolean pos2Free = directChildren.stream().noneMatch(c -> c.getPosition() == 2);
+        int freeSide = pos1Free ? 1 : pos2Free ? 2 : 0;
+        if (freeSide == 0) {
+            log.error("placeInOwnTeamLeftToRight: both positions occupied under user {} level={} — accelerator dropped",
+                    user.getId(), level);
+            return;
+        }
         treePositionRepo.save(TreePosition.builder()
                 .user(user).parent(user).level(level).stage(1)
                 .position(freeSide).isAccelerator(true)
@@ -1605,20 +1612,29 @@ public class TreeService {
      * Tree = root.fixedPartnerLeft/Right (tier-1) + their fixedPartnerLeft/Right (tier-2).
      */
     private boolean allStage2FixedPartnersAtStage(User root, int minStage) {
+        int level = root.getCurrentLevel();
         User left1  = root.getFixedPartnerLeft()  != null
                 ? userRepository.findById(root.getFixedPartnerLeft().getId()).orElse(null)  : null;
         User right1 = root.getFixedPartnerRight() != null
                 ? userRepository.findById(root.getFixedPartnerRight().getId()).orElse(null) : null;
         if (left1 == null || right1 == null) return false;
-        if (left1.getCurrentStage() < minStage || right1.getCurrentStage() < minStage) return false;
+        // A member who advanced to the next level has currentStage reset to 1 but has
+        // completed all stages of the current level — treat them as past minStage.
+        if (!reachedStageAtLevel(left1, level, minStage) || !reachedStageAtLevel(right1, level, minStage)) return false;
 
         User ll = left1.getFixedPartnerLeft()  != null ? userRepository.findById(left1.getFixedPartnerLeft().getId()).orElse(null)  : null;
         User lr = left1.getFixedPartnerRight() != null ? userRepository.findById(left1.getFixedPartnerRight().getId()).orElse(null) : null;
         User rl = right1.getFixedPartnerLeft() != null ? userRepository.findById(right1.getFixedPartnerLeft().getId()).orElse(null)  : null;
         User rr = right1.getFixedPartnerRight() != null ? userRepository.findById(right1.getFixedPartnerRight().getId()).orElse(null) : null;
         if (ll == null || lr == null || rl == null || rr == null) return false;
-        return ll.getCurrentStage() >= minStage && lr.getCurrentStage() >= minStage
-                && rl.getCurrentStage() >= minStage && rr.getCurrentStage() >= minStage;
+        return reachedStageAtLevel(ll, level, minStage) && reachedStageAtLevel(lr, level, minStage)
+                && reachedStageAtLevel(rl, level, minStage) && reachedStageAtLevel(rr, level, minStage);
+    }
+
+    /** Returns true if user has completed the given stage at the given level (handles next-level advances). */
+    private boolean reachedStageAtLevel(User u, int level, int minStage) {
+        return u.getCurrentLevel() > level
+                || (u.getCurrentLevel() == level && u.getCurrentStage() >= minStage);
     }
 
     private boolean allSixMembersAtStage(User root, int level, int minStage) {
@@ -1993,14 +2009,14 @@ public class TreeService {
         tier1.sort(Comparator.comparingInt(TreePosition::getPosition));
 
         for (TreePosition t1 : tier1) {
-            boolean done = t1.getUser().getCurrentStage() >= 3;
+            boolean done = reachedStageAtLevel(t1.getUser(), level, 3);
             if (done) reached++;
             members.add(toStage3Member(t1.getUser(), done));
 
             List<TreePosition> tier2 = treePositionRepo.findByParentAndLevelAndStage(t1.getUser(), level, 1);
             tier2.sort(Comparator.comparingInt(TreePosition::getPosition));
             for (TreePosition t2 : tier2) {
-                boolean done2 = t2.getUser().getCurrentStage() >= 3;
+                boolean done2 = reachedStageAtLevel(t2.getUser(), level, 3);
                 if (done2) reached++;
                 members.add(toStage3Member(t2.getUser(), done2));
             }

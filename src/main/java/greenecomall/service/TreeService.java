@@ -1578,8 +1578,10 @@ public class TreeService {
                 return;
             }
 
+            // Traverse ALL children including accelerators so BFS finds free slots
+            // under accelerator nodes (e.g. right slot of Saikal1 is an accelerator —
+            // its two child positions are valid matrix slots that must be reachable).
             children.stream()
-                    .filter(c -> !c.getIsAccelerator())
                     .sorted(Comparator.comparingInt(TreePosition::getPosition))
                     .forEach(c -> queue.add(c.getUser()));
         }

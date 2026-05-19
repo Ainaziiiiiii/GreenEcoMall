@@ -607,4 +607,44 @@ public class AdminController {
                 .pendingPayments(0)
                 .build()));
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // УПРАВЛЕНИЕ УСКОРИТЕЛЯМИ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(
+            summary = "Переставить ускоритель вручную",
+            description = """
+                    Перемещает ускоритель указанного владельца под нового родителя на заданном уровне.
+                    После перемещения автоматически проверяется завершение Этапа 1 у нового родителя.
+
+                    Тело запроса:
+                    - `acceleratorOwnerUserId` — ID пользователя, чей ускоритель переставляем
+                    - `newParentUserId` — ID пользователя, под кого ставим ускоритель
+                    - `level` — уровень дерева (обычно 1)
+
+                    Вернёт ошибку если ускоритель не найден или у нового родителя нет свободных слотов.
+                    """)
+    @PostMapping("/tree/move-accelerator")
+    public ResponseEntity<ApiResponse<Void>> moveAccelerator(
+            @Valid @RequestBody greenecomall.dto.request.MoveAcceleratorRequest req) {
+        treeService.adminMoveAccelerator(
+                req.acceleratorOwnerUserId(),
+                req.newParentUserId(),
+                req.level());
+        return ResponseEntity.ok(ApiResponse.ok());
+    }
+
+    @Operation(
+            summary = "История ускорителей пользователя",
+            description = """
+                    Возвращает список ускорителей, которые помогли данному пользователю завершить Этап 1.
+                    Показывается только если `acceleratorAssisted = true` в карточке пользователя.
+                    Каждая запись содержит имя и инициалы владельца ускорителя, уровень и дату завершения.
+                    """)
+    @GetMapping("/users/{id}/accelerator-history")
+    public ResponseEntity<ApiResponse<List<greenecomall.dto.response.AcceleratorHistoryResponse>>> getAcceleratorHistory(
+            @PathVariable UUID id) {
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getAcceleratorHistory(id)));
+    }
 }

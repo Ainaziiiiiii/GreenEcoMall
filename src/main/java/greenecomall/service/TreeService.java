@@ -27,6 +27,7 @@ public class TreeService {
     private final TreePositionRepository treePositionRepo;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final greenecomall.repository.AcceleratorAssistRepository acceleratorAssistRepo;
 
     @Value("${app.base-url:https://green-eco-mall-client.up.railway.app}")
     private String baseUrl;
@@ -286,6 +287,7 @@ public class TreeService {
         boolean hadAccelerators = hasAcceleratorsInMatrix(user, level);
         if (hadAccelerators) {
             user.setAcceleratorAssisted(true);
+            saveAcceleratorHistory(user, level);
         }
 
         // Ускоритель выполнил свою задачу — удаляем его из матрицы
@@ -2537,5 +2539,108 @@ public class TreeService {
                 .currentStage(member.getCurrentStage())
                 .reachedStage3(reachedStage3)
                 .build();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ADMIN: РУЧНОЕ ПЕРЕМЕЩЕНИЕ УСКОРИТЕЛЯ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Позволяет администратору вручную переставить ускоритель под другого родителя.
+     * После перемещения запускает проверку завершения Этапа 1 у нового родителя.
+     */
+    @Transactional
+    public void adminMoveAccelerator(UUID acceleratorOwnerUserId, UUID newParentUserId, int level) {
+        User owner = userRepository.findById(acceleratorOwnerUserId)
+                .orElseThrow(() -> greenecomall.exception.BusinessException.of(greenecomall.exception.ErrorCode.USER_NOT_FOUND));
+        User newParent = userRepository.findById(newParentUserId)
+                .orElseThrow(() -> greenecomall.exception.BusinessException.of(greenecomall.exception.ErrorCode.USER_NOT_FOUND));
+
+        // Найти текущую позицию ускорителя
+        List<TreePosition> existing = treePositionRepo.findAll().stream()
+                .filter(tp -> tp.getIsAccelerator()
+                        && tp.getUser().getId().equals(acceleratorOwnerUserId)
+                        && tp.getLevel() == level
+                        && tp.getStage() == 1)
+                .collect(java.util.stream.Collectors.toList());
+
+        if (existing.isEmpty()) {
+            throw new IllegalStateException("Ускоритель пользователя " + acceleratorOwnerUserId
+                    + " на уровне " + level + " не найден");
+        }
+
+        // Проверить свободный слот под новым родителем
+        List<TreePosition> newParentChildren = treePositionRepo.findByParentAndLevelAndStage(newParent, level, 1);
+        boolean pos1Free = newParentChildren.stream().noneMatch(c -> c.getPosition() == 1);
+        boolean pos2Free = newParentChildren.stream().noneMatch(c -> c.getPosition() == 2);
+        int freePos = pos1Free ? 1 : pos2Free ? 2 : 0;
+        if (freePos == 0) {
+            throw new IllegalStateException("У пользователя " + newParentUserId
+                    + " нет свободных слотов на уровне " + level);
+        }
+
+        // Удалить старую позицию, сохранить новую
+        treePositionRepo.deleteAll(existing);
+        treePositionRepo.flush();
+
+        treePositionRepo.save(TreePosition.builder()
+                .user(owner)
+                .parent(newParent)
+                .level(level)
+                .stage(1)
+                .position(freePos)
+                .isAccelerator(true)
+                .stageStatus(greenecomall.enums.StageStatus.IN_PROGRESS)
+                .build());
+
+        // Проверить, завершил ли новый родитель Этап 1
+        checkStage1UpTheChain(newParent, level);
+
+        log.info("Admin moved accelerator of user {} to parent {} level={} pos={}",
+                acceleratorOwnerUserId, newParentUserId, level, freePos);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ADMIN: ИСТОРИЯ УСКОРИТЕЛЕЙ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public List<greenecomall.dto.response.AcceleratorHistoryResponse> getAcceleratorHistory(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> greenecomall.exception.BusinessException.of(greenecomall.exception.ErrorCode.USER_NOT_FOUND));
+        return acceleratorAssistRepo.findByBeneficiaryOrderByCreatedAtDesc(user).stream()
+                .map(a -> greenecomall.dto.response.AcceleratorHistoryResponse.builder()
+                        .acceleratorOwnerUserId(a.getAcceleratorOwner().getId())
+                        .name(a.getAcceleratorOwner().getFirstName() + " " + a.getAcceleratorOwner().getLastName())
+                        .initials(initials(a.getAcceleratorOwner()))
+                        .level(a.getLevel())
+                        .completedAt(a.getCreatedAt())
+                        .build())
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    // ─── helpers ─────────────────────────────────────────────────────────────
+
+    private void saveAcceleratorHistory(User beneficiary, int level) {
+        List<TreePosition> tier1 = treePositionRepo.findByParentAndLevelAndStage(beneficiary, level, 1);
+
+        // Собрать все ускорители в матрице (тир-1 и тир-2)
+        List<TreePosition> accelerators = new java.util.ArrayList<>();
+        for (TreePosition t1 : tier1) {
+            if (Boolean.TRUE.equals(t1.getIsAccelerator())) {
+                accelerators.add(t1);
+            } else {
+                treePositionRepo.findByParentAndLevelAndStage(t1.getUser(), level, 1).stream()
+                        .filter(TreePosition::getIsAccelerator)
+                        .forEach(accelerators::add);
+            }
+        }
+
+        for (TreePosition acc : accelerators) {
+            acceleratorAssistRepo.save(greenecomall.entity.AcceleratorAssist.builder()
+                    .beneficiary(beneficiary)
+                    .acceleratorOwner(acc.getUser())
+                    .level(level)
+                    .build());
+        }
     }
 }

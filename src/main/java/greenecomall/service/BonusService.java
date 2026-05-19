@@ -114,16 +114,22 @@ public class BonusService {
     /**
      * Бонус за завершение Этапа 1:
      *
-     * - root получает: max(0, baseBonus - externalTier1.size() × 1250)
-     *   (за каждого тир-1 участника с чужой реф-ссылкой вычитается 1250)
-     * - Реальный инвайтер каждого такого тир-1 получает 1250
-     * - За каждого тир-2 участника root ВСЕГДА получает 625 как дивиденд
-     *   (независимо от чьей реф-ссылки он пришёл)
+     * Итоговый бонус root = baseBonus − externalTier1.size() × 1250
+     * (baseBonus уже включает и 1250 за тир-1, и 625 за тир-2 — всё входит в одну сумму)
+     *
+     * Если тир-1 участник пришёл по чужой реф-ссылке, его 1250 уходит тому инвайтеру,
+     * а из суммы root вычитается 1250. Дивиденды за тир-2 (625) root получает ВСЕГДА
+     * и они уже заложены в baseBonus — отдельно НЕ начисляются.
+     *
+     * Пример (уровень 1, базовый бонус 5000):
+     *   Оба тир-1 по своей реф.: root = 5000 (= 1250+1250+625+625+625+625)
+     *   1 тир-1 внешний:         root = 3750, внешний инвайтер = 1250
+     *   Оба тир-1 внешние:       root = 2500, каждый внешний инвайтер = 1250
      *
      * @param root          кто завершил Этап 1
      * @param level         уровень
      * @param externalTier1 тир-1 участники, чей inviter != root
-     * @param tier2Members  все реальные тир-2 участники матрицы root
+     * @param tier2Members  не используется (оставлен для совместимости вызова)
      */
     @Transactional
     public void createStage1Bonuses(User root, int level,
@@ -145,12 +151,6 @@ public class BonusService {
             creditBonus(inviter, BonusType.REFERRAL_DIRECT, MEMBER_REFERRAL, "KGS", level, 1,
                     "Реферальный бонус за " + member.getFirstName() + " " + member.getLastName()
                     + " (Этап 1 завершил " + root.getFirstName() + " " + root.getLastName() + ")");
-        }
-
-        for (User member : tier2Members) {
-            creditBonus(root, BonusType.REFERRAL_INDIRECT, TIER2_DIVIDEND, "KGS", level, 1,
-                    "Дивиденд за участника 2-го яруса: "
-                    + member.getFirstName() + " " + member.getLastName());
         }
     }
 

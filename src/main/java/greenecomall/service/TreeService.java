@@ -763,7 +763,8 @@ public class TreeService {
 
     /**
      * Replaces an accelerator slot with a real user.
-     * The accelerator's owner is re-placed at the next available BFS slot under the new real user.
+     * The displaced accelerator finds the next free slot within the SAME matrix
+     * it was already helping — i.e. under the highest Stage-1 ancestor of its parent.
      */
     private void displaceAccelerator(TreePosition accPos, User realUser, int level, int stage) {
         User accOwner = accPos.getUser();
@@ -775,20 +776,31 @@ public class TreeService {
 
         savePosition(realUser, parent, level, stage, position);
 
-        // Walk UP one level so BFS starts from the grandparent (e.g. lola3) rather than
-        // the parent (e.g. шщщщщщщщщ1). After the real user fills the sibling slot the
-        // parent's tier is full, so BFS from the parent would go deeper. Starting from
-        // the grandparent lets BFS find the weakest sibling branch (e.g. шщщщщщщщщ2 with
-        // 0 children) before diving into the occupied subtree.
-        User bfsRoot = parent;
-        Optional<TreePosition> parentPos = treePositionRepo.findByUserAndLevelAndStage(parent, level, 1);
-        if (parentPos.isPresent() && parentPos.get().getParent() != null) {
-            User grandParent = parentPos.get().getParent();
-            if (grandParent.getRole() != greenecomall.enums.Role.ADMIN) {
-                bfsRoot = userRepository.findById(grandParent.getId()).orElse(grandParent);
-            }
+        // BFS from the matrix root — the highest ancestor still on Stage 1 at this level.
+        // This keeps the accelerator inside the same 6-person matrix rather than jumping
+        // to a sibling matrix (e.g. Filipp3's subtree instead of Filipp2's remaining slots).
+        bfsPlaceAccelerator(accOwner, findMatrixRoot(parent, level), level);
+    }
+
+    /**
+     * Walks up the Stage-1 parent chain from `node` and returns the highest node
+     * that is still completing Stage 1 (canAcceleratorBeCleanedUp == true).
+     * This is the root of the 6-person matrix the accelerator belongs to.
+     */
+    private User findMatrixRoot(User node, int level) {
+        User highest = node;
+        Set<UUID> visited = new HashSet<>();
+        User cur = node;
+        while (cur != null && visited.add(cur.getId())) {
+            if (!canAcceleratorBeCleanedUp(cur, level)) break;
+            highest = cur;
+            Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(cur, level, 1);
+            if (pos.isEmpty() || pos.get().getParent() == null) break;
+            User up = userRepository.findById(pos.get().getParent().getId()).orElse(null);
+            if (up == null || up.getRole() == greenecomall.enums.Role.ADMIN) break;
+            cur = up;
         }
-        bfsPlaceAccelerator(accOwner, bfsRoot, level);
+        return highest;
     }
 
     private void savePosition(User user, User parent, int level, int stage, int position) {

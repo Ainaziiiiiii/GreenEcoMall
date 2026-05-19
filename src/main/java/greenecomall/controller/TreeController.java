@@ -152,11 +152,29 @@ public class TreeController {
             description = """
                     Вызывается при клике на узел дерева. Возвращает подробную информацию об участнике:
                     имя, уровень/этап, реферальная ссылка, дата вступления, размер его команды (все тиры).
+
+                    Если `acceleratorAssisted = true` — участник перешёл на Этап 2 с помощью ускорителей.
+                    В этом случае можно вызвать `/api/tree/member/{userId}/accelerator-history`
+                    чтобы увидеть чьи именно ускорители ему помогли.
                     """
     )
     @GetMapping("/member/{userId}")
     public ResponseEntity<ApiResponse<greenecomall.dto.response.MemberCardResponse>> getMemberCard(
             @PathVariable java.util.UUID userId) {
         return ResponseEntity.ok(ApiResponse.ok(treeService.getMemberCard(userId)));
+    }
+
+    @Operation(
+            summary = "Ускорители, помогшие участнику завершить Этап 1",
+            description = """
+                    Доступно только если `acceleratorAssisted = true` в карточке участника.
+                    Возвращает список людей, чьи ускорители помогли данному участнику собрать 6 человек
+                    и перейти на Этап 2. Для каждого ускорителя: имя, инициалы, уровень, дата завершения.
+                    """
+    )
+    @GetMapping("/member/{userId}/accelerator-history")
+    public ResponseEntity<ApiResponse<List<greenecomall.dto.response.AcceleratorHistoryResponse>>> getAcceleratorHistory(
+            @PathVariable java.util.UUID userId) {
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getAcceleratorHistory(userId)));
     }
 }

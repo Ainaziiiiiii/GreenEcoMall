@@ -1555,12 +1555,19 @@ public class TreeService {
 
             int freeSlot = !hasLeft ? 1 : !hasRight ? 2 : 0;
             if (freeSlot != 0) {
-                // Skip slots inside already-completed matrices: when both `current` and its
-                // tree-parent are past Stage 1, checkStage1UpTheChain will return early and
-                // the accelerator will never be removed (stuck forever).
-                if (!canAcceleratorBeCleanedUp(current, level)) {
+                // If current is itself an accelerator node in this matrix, placement here
+                // is always valid: cleanup is driven by the matrix root (e.g. Saikal1),
+                // so current's own currentStage is irrelevant.
+                boolean currentIsAccNode = treePositionRepo
+                        .findByUserIdAndLevelAndStage(current.getId(), level, 1)
+                        .map(TreePosition::getIsAccelerator)
+                        .orElse(false);
+
+                // Skip slots inside already-completed matrices: when current is a real node
+                // past Stage 1, checkStage1UpTheChain returns early and the accelerator
+                // would be stuck forever. Accelerator nodes are exempt from this check.
+                if (!currentIsAccNode && !canAcceleratorBeCleanedUp(current, level)) {
                     children.stream()
-                            .filter(c -> !c.getIsAccelerator())
                             .sorted(Comparator.comparingInt(TreePosition::getPosition))
                             .forEach(c -> queue.add(c.getUser()));
                     continue;

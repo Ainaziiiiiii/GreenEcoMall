@@ -1561,7 +1561,7 @@ public class TreeService {
                 // Use a dedicated query filtered by is_accelerator=true to avoid
                 // ambiguity when current has both a real and an accelerator entry.
                 boolean currentIsAccNode = treePositionRepo
-                        .existsAcceleratorEntryForUser(current.getId(), level);
+                        .countAcceleratorEntriesForUser(current.getId(), level) > 0;
 
                 // Skip slots inside already-completed matrices: when current is a real node
                 // past Stage 1, checkStage1UpTheChain returns early and the accelerator

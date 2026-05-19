@@ -38,6 +38,6 @@ public interface TreePositionRepository extends JpaRepository<TreePosition, UUID
     @Query("SELECT tp FROM TreePosition tp WHERE tp.isAccelerator = true AND tp.level = :level AND tp.stage = 1 AND tp.user.id <> :placerId")
     List<TreePosition> findAcceleratorsByLevelExcluding(@Param("level") int level, @Param("placerId") UUID placerId);
 
-    @Query("SELECT COUNT(tp) > 0 FROM TreePosition tp WHERE tp.user.id = :userId AND tp.level = :level AND tp.stage = 1 AND tp.isAccelerator = true")
-    boolean existsAcceleratorEntryForUser(@Param("userId") UUID userId, @Param("level") int level);
+    @Query("SELECT COUNT(tp) FROM TreePosition tp WHERE tp.user.id = :userId AND tp.level = :level AND tp.stage = 1 AND tp.isAccelerator = true")
+    long countAcceleratorEntriesForUser(@Param("userId") UUID userId, @Param("level") int level);
 }

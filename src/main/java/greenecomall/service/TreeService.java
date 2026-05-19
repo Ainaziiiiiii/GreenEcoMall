@@ -1558,10 +1558,10 @@ public class TreeService {
                 // If current is itself an accelerator node in this matrix, placement here
                 // is always valid: cleanup is driven by the matrix root (e.g. Saikal1),
                 // so current's own currentStage is irrelevant.
+                // Use a dedicated query filtered by is_accelerator=true to avoid
+                // ambiguity when current has both a real and an accelerator entry.
                 boolean currentIsAccNode = treePositionRepo
-                        .findByUserIdAndLevelAndStage(current.getId(), level, 1)
-                        .map(TreePosition::getIsAccelerator)
-                        .orElse(false);
+                        .existsAcceleratorEntryForUser(current.getId(), level);
 
                 // Skip slots inside already-completed matrices: when current is a real node
                 // past Stage 1, checkStage1UpTheChain returns early and the accelerator

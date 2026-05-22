@@ -244,6 +244,10 @@ public class TreeService {
         while (cur != null && visited.add(cur.getId())) {
             checkStage1Completion(cur, level);
             Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(cur, level, 1);
+            if (pos.isEmpty()) {
+                // cur may be an accelerator node — try the acc position to keep walking up
+                pos = treePositionRepo.findByUserIdAndLevelAndStage(cur.getId(), level, 1);
+            }
             if (pos.isEmpty() || pos.get().getParent() == null) break;
             cur = pos.get().getParent();
         }
@@ -773,36 +777,55 @@ public class TreeService {
         User parent   = accPos.getParent();
         int  position = accPos.getPosition();
 
+        // Collect acc's existing children BEFORE deletion so we can re-parent them.
+        // This happens when an acc at tier-1 has already received acc children at tier-2.
+        List<TreePosition> accChildren = treePositionRepo.findByParentAndLevelAndStage(accOwner, level, stage);
+
         treePositionRepo.delete(accPos);
         treePositionRepo.flush();
 
         savePosition(realUser, parent, level, stage, position);
+        treePositionRepo.flush();
 
-        // BFS from the matrix root — the highest ancestor still on Stage 1 at this level.
-        // This keeps the accelerator inside the same 6-person matrix rather than jumping
-        // to a sibling matrix (e.g. Filipp3's subtree instead of Filipp2's remaining slots).
+        // Re-parent the acc's tier-2 children to the incoming real user so they keep
+        // counting toward the matrix and are not left orphaned.
+        for (TreePosition child : accChildren) {
+            treePositionRepo.save(TreePosition.builder()
+                    .id(child.getId())
+                    .user(child.getUser())
+                    .parent(realUser)
+                    .level(child.getLevel())
+                    .stage(child.getStage())
+                    .position(child.getPosition())
+                    .isAccelerator(child.getIsAccelerator())
+                    .stageStatus(child.getStageStatus())
+                    .build());
+        }
+        if (!accChildren.isEmpty()) treePositionRepo.flush();
+
+        // BFS from the exact matrix root (one level up from parent) so the displaced acc
+        // stays inside the same 6-person matrix instead of jumping to a sibling matrix.
         bfsPlaceAccelerator(accOwner, findMatrixRoot(parent, level), level);
     }
 
     /**
-     * Walks up the Stage-1 parent chain from `node` and returns the highest node
-     * that is still completing Stage 1 (canAcceleratorBeCleanedUp == true).
-     * This is the root of the 6-person matrix the accelerator belongs to.
+     * Returns the root of the 6-person matrix that `node` (the direct parent of a
+     * displaced accelerator) belongs to.
+     *
+     * A 6-person matrix is exactly 2 tiers deep, so the matrix root is at most ONE
+     * level above `node` in the Stage-1 tree:
+     *   - tier-2 acc (parent = tier-1 node):  matrix root = node's parent
+     *   - tier-1 acc (parent = matrix root):  matrix root = node itself
+     *
+     * We walk up exactly ONE step — going higher would cross into a sibling matrix.
      */
     private User findMatrixRoot(User node, int level) {
-        User highest = node;
-        Set<UUID> visited = new HashSet<>();
-        User cur = node;
-        while (cur != null && visited.add(cur.getId())) {
-            if (!canAcceleratorBeCleanedUp(cur, level)) break;
-            highest = cur;
-            Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(cur, level, 1);
-            if (pos.isEmpty() || pos.get().getParent() == null) break;
-            User up = userRepository.findById(pos.get().getParent().getId()).orElse(null);
-            if (up == null || up.getRole() == greenecomall.enums.Role.ADMIN) break;
-            cur = up;
-        }
-        return highest;
+        Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(node, level, 1);
+        if (pos.isEmpty() || pos.get().getParent() == null) return node;
+        User parent = userRepository.findById(pos.get().getParent().getId()).orElse(null);
+        if (parent == null || parent.getRole() == greenecomall.enums.Role.ADMIN) return node;
+        if (!canAcceleratorBeCleanedUp(parent, level)) return node;
+        return parent;
     }
 
     private void savePosition(User user, User parent, int level, int stage, int position) {
@@ -837,19 +860,25 @@ public class TreeService {
         // not through this general-purpose check.
         if (fresh.getRegistrationPlan() == RegistrationPlan.FAST_START) return;
 
-        // Standard: needs 6 filled positions (2 tiers). Accelerators occupy real tier-2 slots
-        // and count toward completion. Only tier-1 must be real people (accelerators placed
-        // directly under the root inflate tier1 count and must be excluded).
+        // Needs 6 filled positions (2 tiers). Accelerators count toward completion.
+        // For REAL tier-1 nodes: count all their children (real + acc) — those ARE this matrix.
+        // For ACC tier-1 nodes: count ONLY their acc children. The acc owner's own Stage-1
+        // real children (from their own matrix, which they completed before) must not be
+        // included — they belong to a different matrix and would falsely inflate the count.
         List<TreePosition> directChildren = treePositionRepo.findByParentAndLevelAndStage(fresh, level, 1);
-        long realTier1 = directChildren.stream().filter(c -> !c.getIsAccelerator()).count();
-        if (realTier1 < 2) return;
+        if (directChildren.size() < 2) return;
 
         long tier2 = directChildren.stream()
-                .filter(c -> !c.getIsAccelerator())
-                .mapToLong(c -> treePositionRepo.countByParentAndLevelAndStage(c.getUser(), level, 1))
+                .mapToLong(c -> {
+                    if (Boolean.TRUE.equals(c.getIsAccelerator())) {
+                        return treePositionRepo.findByParentAndLevelAndStage(c.getUser(), level, 1)
+                                .stream().filter(TreePosition::getIsAccelerator).count();
+                    }
+                    return (long) treePositionRepo.countByParentAndLevelAndStage(c.getUser(), level, 1);
+                })
                 .sum();
 
-        if (realTier1 + tier2 >= 6) {
+        if (directChildren.size() + tier2 >= 6) {
             onStage1Completed(fresh, level);
         }
     }
@@ -1544,10 +1573,12 @@ public class TreeService {
 
     private void bfsPlaceAccelerator(User owner, User branchRoot, int level) {
         Queue<User> queue = new ArrayDeque<>();
+        Set<UUID> visited = new HashSet<>();
         queue.add(branchRoot);
 
         while (!queue.isEmpty()) {
             User current = queue.poll();
+            if (!visited.add(current.getId())) continue;
             List<TreePosition> children = treePositionRepo.findByParentAndLevelAndStage(current, level, 1);
 
             boolean hasLeft  = children.stream().anyMatch(c -> c.getPosition() == 1);
@@ -1621,22 +1652,19 @@ public class TreeService {
 
     @Transactional
     public void removeAcceleratorsUnder(User user, int level) {
-        // Check tier-1 (direct children of root)
         List<TreePosition> tier1 = treePositionRepo.findByParentAndLevelAndStage(user, level, 1);
-        for (TreePosition pos : tier1) {
-            if (Boolean.TRUE.equals(pos.getIsAccelerator())) {
-                treePositionRepo.delete(pos);
-            }
-        }
-        // Check tier-2 (children of each real tier-1 node)
         for (TreePosition t1 : tier1) {
-            if (!Boolean.TRUE.equals(t1.getIsAccelerator())) {
-                List<TreePosition> tier2 = treePositionRepo.findByParentAndLevelAndStage(t1.getUser(), level, 1);
-                for (TreePosition pos : tier2) {
-                    if (Boolean.TRUE.equals(pos.getIsAccelerator())) {
-                        treePositionRepo.delete(pos);
-                    }
+            // Delete tier-2 children under this tier-1 node (real or acc).
+            // Acc tier-1 nodes may have acc children that were placed under them.
+            List<TreePosition> tier2 = treePositionRepo.findByParentAndLevelAndStage(t1.getUser(), level, 1);
+            for (TreePosition t2 : tier2) {
+                if (Boolean.TRUE.equals(t2.getIsAccelerator())) {
+                    treePositionRepo.delete(t2);
                 }
+            }
+            // Then delete the tier-1 acc itself (after its children are gone)
+            if (Boolean.TRUE.equals(t1.getIsAccelerator())) {
+                treePositionRepo.delete(t1);
             }
         }
     }

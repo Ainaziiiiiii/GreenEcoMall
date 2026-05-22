@@ -54,9 +54,9 @@ sms:
   smspro:
     enabled: false
     url: ${SMSPRO_URL:https://smspro.nikita.kg/api/message}
-    login: Cholpon123456
-    password: 6Jf8
-    sender: BilgirimKG
+    login: рррр
+    password: 6Jf8ооо
+    sender: тттт
 
 telegram:
   bot-token: ${TELEGRAM_BOT_TOKEN:8681208071:AAFmF6OFuS8YgQJ87_a0sA733AP4xFKTA68}

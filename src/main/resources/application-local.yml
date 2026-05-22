@@ -21,7 +21,7 @@ spring:
 
 jwt:
   secret: greenecomall-super-secret-key-must-be-at-least-256-bits-long-for-hs256
-  access-token-expiration: 900000       # 15 minutes
+  access-token-expiration: 2592000000       # 15 minutes
   refresh-token-expiration: 2592000000  # 30 days
 
 app:
@@ -48,9 +48,9 @@ sms:
   smspro:
     enabled: false
     url: ${SMSPRO_URL:https://smspro.nikita.kg/api/message}
-    login: Cholpon123456
-    password: 6EX5vJf8
-    sender: BilgirimKG
+    login: ррррр
+    password: ррр
+    sender: тттт
 
 
 logging:

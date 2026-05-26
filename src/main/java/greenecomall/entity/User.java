@@ -76,6 +76,11 @@ public class User {
     @Builder.Default
     private Boolean acceleratorAssisted = false;
 
+    /** Этап 2 завершён с помощью ускорителя (Acc-S2). Запрещает выдачу Acc-S1 при завершении Этапа 2. */
+    @Column(nullable = false)
+    @Builder.Default
+    private Boolean accAssistedStage2 = false;
+
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "fixed_partner_left_id")

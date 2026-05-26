@@ -149,26 +149,37 @@ public class TreeService {
             boolean rightIsLevel0 = host.getFixedPartnerRight() != null
                     && host.getFixedPartnerRight().getRegistrationPlan() == RegistrationPlan.FAST_START;
 
-            if (host.getFixedPartnerLeft() == null && !rightIsLevel0) {
+            List<TreePosition> hostAccs = treePositionRepo.findByParentAndLevelAndStage(host, 1, 2)
+                    .stream().filter(TreePosition::getIsAccelerator).toList();
+            boolean leftAccExists  = hostAccs.stream().anyMatch(a -> a.getPosition() == 1);
+            boolean rightAccExists = hostAccs.stream().anyMatch(a -> a.getPosition() == 2);
+
+            boolean leftTaken  = host.getFixedPartnerLeft()  != null || leftAccExists;
+            boolean rightTaken = host.getFixedPartnerRight() != null || rightAccExists;
+
+            if (!leftTaken && !rightIsLevel0) {
                 host.setFixedPartnerLeft(locked);
                 userRepository.save(host);
                 notificationService.send(host, NotificationType.NEW_MEMBER,
                         "Этап 2 — левая позиция занята",
                         locked.getFirstName() + " " + locked.getLastName() + " (Быстрый Старт) встал слева");
-                if (host.getFixedPartnerRight() != null) {
+                if (rightTaken) {
+                    if (rightAccExists) host.setAccAssistedStage2(true);
+                    userRepository.save(host);
                     onStage2Completed(host, 1);
                 }
                 log.info("Level 0 graduate {} placed as fixedPartnerLeft of {}", locked.getId(), host.getId());
                 return;
             }
 
-            if (host.getFixedPartnerRight() == null && !leftIsLevel0) {
+            if (!rightTaken && !leftIsLevel0) {
                 host.setFixedPartnerRight(locked);
+                if (leftAccExists) host.setAccAssistedStage2(true);
                 userRepository.save(host);
                 notificationService.send(host, NotificationType.NEW_MEMBER,
                         "Этап 2 — правая позиция занята",
                         locked.getFirstName() + " " + locked.getLastName() + " (Быстрый Старт) встал справа");
-                if (host.getFixedPartnerLeft() != null) {
+                if (leftTaken) {
                     onStage2Completed(host, 1);
                 }
                 log.info("Level 0 graduate {} placed as fixedPartnerRight of {}", locked.getId(), host.getId());
@@ -329,15 +340,31 @@ public class TreeService {
             bonusService.createStageBonuses(user, level, 2); // платит только уровням 3-4
         }
 
+        // Detect Stage 2 Acc assistance (Acc-S2 entries stored at stage=2 in tree_positions)
+        boolean accAssistedStage2 = level == 1 &&
+                treePositionRepo.findByParentAndLevelAndStage(user, level, 2)
+                        .stream().anyMatch(TreePosition::getIsAccelerator);
+        if (accAssistedStage2) {
+            user.setAccAssistedStage2(true);
+        }
+
         user.setCurrentStage(3);
         userRepository.save(user);
 
-        // Accelerator is placed only on Levels 1 and 2 (not Fast Start = level 0)
-        if (level >= 1 && level <= 2) {
-            placeAccelerator(user, level);
+        // Level 1: give Stage-1 acc only when NOT acc-assisted at Stage 2
+        // Level 2: give Stage-1 Level-2 acc + new Stage-2 Level-1 acc (Acc-S2)
+        if (level == 1) {
+            if (!accAssistedStage2) {
+                placeAccelerator(user, 1);
+            }
+            // Acc-S2 entries are NOT deleted here — they stay as reserved slots.
+            // Real users will come later and displace them (see placeAsFixedPartner Stage-3 path).
+        } else if (level == 2) {
+            placeAccelerator(user, 2);        // Acc-S1 at Level 2 matrix
+            placeStage2Accelerator(user);     // Acc-S2 at Level 1, Stage 2 slots
         }
 
-        log.info("User {} completed Stage 2 at level {}", user.getId(), level);
+        log.info("User {} completed Stage 2 at level {} (accAssisted={})", user.getId(), level, accAssistedStage2);
 
         // Notify the inviter's tree root that one more member reached Stage 3
         checkStage3Progress(user, level);
@@ -345,6 +372,84 @@ public class TreeService {
         notificationService.send(user, NotificationType.STAGE_COMPLETE,
                 "Этап 2 завершён",
                 "Оба партнёра подтверждены. Вы на Этапе 3 уровня " + level + ".");
+    }
+
+    /**
+     * Places a Stage-2 accelerator (Acc-S2) into the fixed-partner slots of a Level 1 Stage-2 user.
+     * Called when the sender reaches Stage 3 of Level 2.
+     *
+     * Stored as TreePosition{stage=2, isAccelerator=true, parent=recipient, user=sender, position=1or2}.
+     * Fires onStage2Completed for the recipient if both slots become filled (real+acc or real+real).
+     */
+    @Transactional
+    public void placeStage2Accelerator(User sender) {
+        final int targetLevel = 1;
+
+        // Find the earliest Level 1 Stage 2 user with at least one free slot (not taken by real or acc)
+        List<User> candidates = userRepository.findAll().stream()
+                .filter(u -> u.getCurrentLevel() == targetLevel && u.getCurrentStage() == 2)
+                .filter(u -> u.getRole() != greenecomall.enums.Role.ADMIN)
+                .filter(u -> !u.getId().equals(sender.getId()))
+                .filter(u -> {
+                    List<TreePosition> accs = treePositionRepo
+                            .findByParentAndLevelAndStage(u, targetLevel, 2)
+                            .stream().filter(TreePosition::getIsAccelerator).toList();
+                    boolean leftFree  = u.getFixedPartnerLeft()  == null
+                            && accs.stream().noneMatch(a -> a.getPosition() == 1);
+                    boolean rightFree = u.getFixedPartnerRight() == null
+                            && accs.stream().noneMatch(a -> a.getPosition() == 2);
+                    return leftFree || rightFree;
+                })
+                .sorted(java.util.Comparator.comparing(u ->
+                        u.getActivatedAt() != null ? u.getActivatedAt() : java.time.LocalDateTime.MAX))
+                .toList();
+
+        if (candidates.isEmpty()) {
+            log.warn("placeStage2Accelerator: no eligible Level-1 Stage-2 user found for sender={}", sender.getId());
+            return;
+        }
+
+        User target = userRepository.findByIdForUpdate(candidates.get(0).getId())
+                .orElse(candidates.get(0));
+        if (target.getCurrentLevel() != targetLevel || target.getCurrentStage() != 2) return;
+
+        List<TreePosition> existingAccs = treePositionRepo
+                .findByParentAndLevelAndStage(target, targetLevel, 2)
+                .stream().filter(TreePosition::getIsAccelerator).toList();
+        boolean leftAccExists  = existingAccs.stream().anyMatch(a -> a.getPosition() == 1);
+        boolean rightAccExists = existingAccs.stream().anyMatch(a -> a.getPosition() == 2);
+
+        int slot;
+        if (target.getFixedPartnerLeft() == null && !leftAccExists)       slot = 1;
+        else if (target.getFixedPartnerRight() == null && !rightAccExists) slot = 2;
+        else {
+            log.warn("placeStage2Accelerator: no free slot for target={}", target.getId());
+            return;
+        }
+
+        treePositionRepo.save(TreePosition.builder()
+                .user(sender)
+                .parent(target)
+                .level(targetLevel)
+                .stage(2)
+                .position(slot)
+                .isAccelerator(true)
+                .stageStatus(StageStatus.IN_PROGRESS)
+                .build());
+
+        // If the other slot is already filled by a real partner → Stage 2 complete
+        boolean otherSlotFilled = (slot == 1 && target.getFixedPartnerRight() != null)
+                || (slot == 2 && target.getFixedPartnerLeft() != null);
+        if (otherSlotFilled) {
+            target.setAccAssistedStage2(true);
+            userRepository.save(target);
+            onStage2Completed(target, targetLevel);
+        }
+
+        notificationService.send(target, NotificationType.ACCELERATOR_PLACED,
+                "Ускоритель Этапа 2",
+                sender.getFirstName() + " " + sender.getLastName()
+                        + " разместил ускоритель в ваш Этап 2 (позиция " + slot + ").");
     }
 
     /**
@@ -882,13 +987,22 @@ public class TreeService {
         if (fresh.getRegistrationPlan() == RegistrationPlan.FAST_START) return;
 
         // Needs 6 filled positions (2 tiers). Accelerators count toward completion.
+        // RULE: BOTH tier-1 positions (pos 1 and 2) must be occupied by REAL users, never accs.
+        // If a tier-1 slot is still an accelerator, stage must not complete — otherwise
+        // removeAcceleratorsUnder would delete that entire branch, leaving it invisible.
+        List<TreePosition> directChildren = treePositionRepo.findByParentAndLevelAndStage(fresh, level, 1);
+        if (directChildren.size() < 2) return;
+
+        boolean pos1Real = directChildren.stream()
+                .anyMatch(c -> c.getPosition() == 1 && !Boolean.TRUE.equals(c.getIsAccelerator()));
+        boolean pos2Real = directChildren.stream()
+                .anyMatch(c -> c.getPosition() == 2 && !Boolean.TRUE.equals(c.getIsAccelerator()));
+        if (!pos1Real || !pos2Real) return;
+
         // For REAL tier-1 nodes: count all their children (real + acc) — those ARE this matrix.
         // For ACC tier-1 nodes: count ONLY their acc children. The acc owner's own Stage-1
         // real children (from their own matrix, which they completed before) must not be
         // included — they belong to a different matrix and would falsely inflate the count.
-        List<TreePosition> directChildren = treePositionRepo.findByParentAndLevelAndStage(fresh, level, 1);
-        if (directChildren.size() < 2) return;
-
         long tier2 = directChildren.stream()
                 .mapToLong(c -> {
                     if (Boolean.TRUE.equals(c.getIsAccelerator())) {
@@ -1055,13 +1169,13 @@ public class TreeService {
         // Do NOT walk up to root — that would include the other branch and break alignment.
         if (ancestor == null && branchAnchor != null) {
             User target = findWeakestStage2Target(branchAnchor, level);
-            if (target == null) placeUnderFastStartGraduate(user, level);
+            if (target == null) placeWithAccOrFastStartFallback(user, level);
             else                placeAsFixedPartner(user, target, level);
             return;
         }
 
         if (ancestor == null) {
-            placeUnderFastStartGraduate(user, level);
+            placeWithAccOrFastStartFallback(user, level);
             return;
         }
 
@@ -1091,7 +1205,7 @@ public class TreeService {
         // No Stage-2 node with free slot in the chain — search within the ancestor's subtree.
         if (target == null) target = findWeakestStage2Target(ancestor, level);
         if (target == null) {
-            placeUnderFastStartGraduate(user, level);
+            placeWithAccOrFastStartFallback(user, level);
             return;
         }
 
@@ -1180,16 +1294,64 @@ public class TreeService {
         User locked = userRepository.findByIdForUpdate(target.getId())
                 .orElseThrow(() -> new IllegalStateException("Stage2 target not found: " + target.getId()));
 
-        if (locked.getCurrentStage() != 2 || locked.getCurrentLevel() != level) return;
+        // Account for Acc-S2 entries occupying slots
+        List<TreePosition> stage2Accs = treePositionRepo
+                .findByParentAndLevelAndStage(locked, level, 2)
+                .stream().filter(TreePosition::getIsAccelerator).toList();
+        boolean leftAccExists  = stage2Accs.stream().anyMatch(a -> a.getPosition() == 1);
+        boolean rightAccExists = stage2Accs.stream().anyMatch(a -> a.getPosition() == 2);
 
-        if (locked.getFixedPartnerLeft() == null) {
+        boolean isStage2 = locked.getCurrentStage() == 2 && locked.getCurrentLevel() == level;
+        boolean isStage3WithAccSlot = locked.getCurrentStage() == 3 && locked.getCurrentLevel() == level
+                && ((leftAccExists  && locked.getFixedPartnerLeft()  == null)
+                 || (rightAccExists && locked.getFixedPartnerRight() == null));
+
+        if (!isStage2 && !isStage3WithAccSlot) return;
+
+        // Stage 3 path: real user displaces the Acc-S2 reserved slot
+        if (isStage3WithAccSlot) {
+            if (leftAccExists && locked.getFixedPartnerLeft() == null) {
+                TreePosition accEntry = stage2Accs.stream()
+                        .filter(a -> a.getPosition() == 1).findFirst().orElse(null);
+                if (accEntry != null) treePositionRepo.delete(accEntry);
+                locked.setFixedPartnerLeft(user);
+                userRepository.save(locked);
+                notificationService.send(locked, NotificationType.NEW_MEMBER,
+                        "Этап 2 — левая позиция занята",
+                        user.getFirstName() + " " + user.getLastName() + " заменил ускоритель слева");
+            } else if (rightAccExists && locked.getFixedPartnerRight() == null) {
+                TreePosition accEntry = stage2Accs.stream()
+                        .filter(a -> a.getPosition() == 2).findFirst().orElse(null);
+                if (accEntry != null) treePositionRepo.delete(accEntry);
+                locked.setFixedPartnerRight(user);
+                userRepository.save(locked);
+                notificationService.send(locked, NotificationType.NEW_MEMBER,
+                        "Этап 2 — правая позиция занята",
+                        user.getFirstName() + " " + user.getLastName() + " заменил ускоритель справа");
+            }
+            // Check if the Stage-3 host can now complete Stage 3 with real partners in place
+            checkStage3Progress(locked, level);
+            return;
+        }
+
+        // Normal Stage 2 path
+        boolean leftTaken  = locked.getFixedPartnerLeft()  != null || leftAccExists;
+        boolean rightTaken = locked.getFixedPartnerRight() != null || rightAccExists;
+
+        if (!leftTaken) {
             locked.setFixedPartnerLeft(user);
             userRepository.save(locked);
             notificationService.send(locked, NotificationType.NEW_MEMBER,
                     "Этап 2 — левая позиция занята",
                     user.getFirstName() + " " + user.getLastName() + " встал на Этап 2 (слева)");
-        } else if (locked.getFixedPartnerRight() == null) {
+            if (rightTaken) {
+                if (rightAccExists) locked.setAccAssistedStage2(true);
+                userRepository.save(locked);
+                onStage2Completed(locked, level);
+            }
+        } else if (!rightTaken) {
             locked.setFixedPartnerRight(user);
+            if (leftAccExists) locked.setAccAssistedStage2(true);
             userRepository.save(locked);
             notificationService.send(locked, NotificationType.NEW_MEMBER,
                     "Этап 2 — правая позиция занята",
@@ -1309,6 +1471,56 @@ public class TreeService {
                     return fresh; // ближайший предок на Stage 2 со свободным слотом
                 }
                 // предок на Stage 2 но уже заполнен — продолжаем идти выше
+            }
+
+            Optional<TreePosition> parentPos = treePositionRepo.findByUserAndLevelAndStage(fresh, level, 1);
+            if (parentPos.isEmpty() || parentPos.get().getParent() == null) break;
+            parent = parentPos.get().getParent();
+        }
+        return null;
+    }
+
+    /**
+     * Tries to place the user with an Acc-S2 displacement first; falls back to Fast Start
+     * graduate if no suitable Stage-3-with-acc ancestor exists.
+     */
+    private void placeWithAccOrFastStartFallback(User user, int level) {
+        User stage3Target = findStage3AncestorWithAccSlot(user, level);
+        if (stage3Target != null) {
+            placeAsFixedPartner(user, stage3Target, level);
+        } else {
+            placeUnderFastStartGraduate(user, level);
+        }
+    }
+
+    /**
+     * Walks UP the Stage-1 BFS parent chain looking for the nearest ancestor who:
+     *   - is at Stage 3 of the given level, AND
+     *   - still has an Acc-S2 reserved slot (TreePosition with stage=2, isAccelerator=true)
+     *     that has NOT yet been filled by a real fixed partner.
+     *
+     * Returns the first such ancestor, or null if none found.
+     */
+    private User findStage3AncestorWithAccSlot(User user, int level) {
+        Set<UUID> visited = new HashSet<>();
+        Optional<TreePosition> pos = treePositionRepo.findByUserAndLevelAndStage(user, level, 1);
+        if (pos.isEmpty()) return null;
+
+        User parent = pos.get().getParent();
+        while (parent != null && visited.add(parent.getId())) {
+            User fresh = userRepository.findById(parent.getId()).orElse(null);
+            if (fresh == null) break;
+
+            if (fresh.getRole() != greenecomall.enums.Role.ADMIN
+                    && fresh.getCurrentLevel() == level && fresh.getCurrentStage() == 3) {
+                List<TreePosition> accs = treePositionRepo
+                        .findByParentAndLevelAndStage(fresh, level, 2)
+                        .stream().filter(TreePosition::getIsAccelerator).toList();
+                boolean leftAccFree  = accs.stream().anyMatch(a -> a.getPosition() == 1)
+                        && fresh.getFixedPartnerLeft()  == null;
+                boolean rightAccFree = accs.stream().anyMatch(a -> a.getPosition() == 2)
+                        && fresh.getFixedPartnerRight() == null;
+                if (leftAccFree || rightAccFree) return fresh;
             }
 
             Optional<TreePosition> parentPos = treePositionRepo.findByUserAndLevelAndStage(fresh, level, 1);
@@ -1929,6 +2141,14 @@ public class TreeService {
         User right = userReachedStage && user.getFixedPartnerRight() != null
                 ? userRepository.findById(user.getFixedPartnerRight().getId()).orElse(null) : null;
 
+        // Acc-S2: show accelerator placeholder nodes in Stage 2 slots (only for stage==2)
+        List<TreePosition> stage2Accs = (userReachedStage && stage == 2)
+                ? treePositionRepo.findByParentAndLevelAndStage(user, level, stage)
+                        .stream().filter(TreePosition::getIsAccelerator).toList()
+                : List.of();
+        TreePosition leftAcc  = stage2Accs.stream().filter(a -> a.getPosition() == 1).findFirst().orElse(null);
+        TreePosition rightAcc = stage2Accs.stream().filter(a -> a.getPosition() == 2).findFirst().orElse(null);
+
         List<TreeNodeResponse> children = new ArrayList<>();
         if (left != null && !visited.contains(left.getId()) && left.getCurrentStage() >= stage) {
             children.add(TreeNodeResponse.builder()
@@ -1941,6 +2161,19 @@ public class TreeService {
                     .stageStatus(left.getCurrentStage() > stage ? StageStatus.COMPLETED : StageStatus.IN_PROGRESS)
                     .children(buildFixedPartnersTree(left, level, stage, new HashSet<>(visited)).root().children())
                     .build());
+        } else if (left == null && leftAcc != null) {
+            User accOwner = userRepository.findById(leftAcc.getUser().getId()).orElse(null);
+            if (accOwner != null) {
+                children.add(TreeNodeResponse.builder()
+                        .userId(accOwner.getId())
+                        .name(accOwner.getFirstName() + " " + accOwner.getLastName())
+                        .initials(initials(accOwner))
+                        .position(1)
+                        .isAccelerator(true)
+                        .stageStatus(StageStatus.IN_PROGRESS)
+                        .children(List.of())
+                        .build());
+            }
         }
         if (right != null && !visited.contains(right.getId()) && right.getCurrentStage() >= stage) {
             children.add(TreeNodeResponse.builder()
@@ -1953,6 +2186,19 @@ public class TreeService {
                     .stageStatus(right.getCurrentStage() > stage ? StageStatus.COMPLETED : StageStatus.IN_PROGRESS)
                     .children(buildFixedPartnersTree(right, level, stage, new HashSet<>(visited)).root().children())
                     .build());
+        } else if (right == null && rightAcc != null) {
+            User accOwner = userRepository.findById(rightAcc.getUser().getId()).orElse(null);
+            if (accOwner != null) {
+                children.add(TreeNodeResponse.builder()
+                        .userId(accOwner.getId())
+                        .name(accOwner.getFirstName() + " " + accOwner.getLastName())
+                        .initials(initials(accOwner))
+                        .position(2)
+                        .isAccelerator(true)
+                        .stageStatus(StageStatus.IN_PROGRESS)
+                        .children(List.of())
+                        .build());
+            }
         }
 
         int filled = children.size();
@@ -2619,27 +2865,29 @@ public class TreeService {
         User newParent = userRepository.findById(newParentUserId)
                 .orElseThrow(() -> greenecomall.exception.BusinessException.of(greenecomall.exception.ErrorCode.USER_NOT_FOUND));
 
-        // Найти текущую позицию ускорителя
+        // Найти текущую позицию ускорителя (stage 1 = Acc-S1, stage 2 = Acc-S2)
         List<TreePosition> existing = treePositionRepo.findAll().stream()
                 .filter(tp -> tp.getIsAccelerator()
                         && tp.getUser().getId().equals(acceleratorOwnerUserId)
-                        && tp.getLevel() == level
-                        && tp.getStage() == 1)
+                        && tp.getLevel() == level)
                 .collect(java.util.stream.Collectors.toList());
 
         if (existing.isEmpty()) {
-            throw new IllegalStateException("Ускоритель пользователя " + acceleratorOwnerUserId
-                    + " на уровне " + level + " не найден");
+            throw new IllegalStateException("Ускоритель пользователя " + owner.getFirstName()
+                    + " " + owner.getLastName() + " на уровне " + level + " не найден");
         }
 
-        // Проверить свободный слот под новым родителем
-        List<TreePosition> newParentChildren = treePositionRepo.findByParentAndLevelAndStage(newParent, level, 1);
+        int accStage = existing.get(0).getStage();
+
+        // Проверить свободный слот под новым родителем (в том же этапе что и ускоритель)
+        List<TreePosition> newParentChildren = treePositionRepo.findByParentAndLevelAndStage(newParent, level, accStage);
         boolean pos1Free = newParentChildren.stream().noneMatch(c -> c.getPosition() == 1);
         boolean pos2Free = newParentChildren.stream().noneMatch(c -> c.getPosition() == 2);
         int freePos = pos1Free ? 1 : pos2Free ? 2 : 0;
         if (freePos == 0) {
-            throw new IllegalStateException("У пользователя " + newParentUserId
-                    + " нет свободных слотов на уровне " + level);
+            throw new IllegalStateException("У пользователя " + newParent.getFirstName() + " "
+                    + newParent.getLastName() + " нет свободных слотов на уровне " + level
+                    + " этапе " + accStage);
         }
 
         // Удалить старую позицию, сохранить новую
@@ -2650,14 +2898,26 @@ public class TreeService {
                 .user(owner)
                 .parent(newParent)
                 .level(level)
-                .stage(1)
+                .stage(accStage)
                 .position(freePos)
                 .isAccelerator(true)
                 .stageStatus(greenecomall.enums.StageStatus.IN_PROGRESS)
                 .build());
 
-        // Проверить, завершил ли новый родитель Этап 1
-        checkStage1UpTheChain(newParent, level);
+        // Проверить завершение этапа для нового родителя
+        if (accStage == 1) {
+            checkStage1UpTheChain(newParent, level);
+        } else {
+            // Acc-S2: проверить завершение Этапа 2 у нового родителя
+            List<TreePosition> stage2Accs = treePositionRepo
+                    .findByParentAndLevelAndStage(newParent, level, 2)
+                    .stream().filter(TreePosition::getIsAccelerator).toList();
+            boolean otherSlotFilled = (freePos == 1 && newParent.getFixedPartnerRight() != null)
+                    || (freePos == 2 && newParent.getFixedPartnerLeft() != null);
+            if (otherSlotFilled) {
+                onStage2Completed(newParent, level);
+            }
+        }
 
         log.info("Admin moved accelerator of user {} to parent {} level={} pos={}",
                 acceleratorOwnerUserId, newParentUserId, level, freePos);

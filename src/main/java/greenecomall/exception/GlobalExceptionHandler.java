@@ -45,6 +45,18 @@ public class GlobalExceptionHandler {
         return error("UNAUTHORIZED", "Не авторизован", HttpStatus.UNAUTHORIZED);
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException ex) {
+        log.warn("Business rule violation: {}", ex.getMessage());
+        return error("BAD_REQUEST", ex.getMessage(), HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("Invalid argument: {}", ex.getMessage());
+        return error("BAD_REQUEST", ex.getMessage(), HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleAll(Exception ex) {
         log.error("Unexpected error", ex);

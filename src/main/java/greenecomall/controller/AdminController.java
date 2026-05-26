@@ -1,9 +1,15 @@
 package greenecomall.controller;
 
+import greenecomall.dto.response.AdminActionLogResponse;
 import greenecomall.dto.response.AdminStatsResponse;
 import greenecomall.dto.response.ApiResponse;
+import greenecomall.dto.response.BranchStatsResponse;
+import greenecomall.dto.response.NewsCommentResponse;
 import greenecomall.dto.response.NewsItemResponse;
 import greenecomall.dto.response.NewsStatsResponse;
+import greenecomall.dto.response.StagesOverviewResponse;
+import greenecomall.dto.response.TeamActivityResponse;
+import greenecomall.dto.response.TreeResponse;
 import greenecomall.dto.response.WithdrawalItemResponse;
 import greenecomall.dto.response.WithdrawalStatsResponse;
 import greenecomall.dto.request.CreateNewsRequest;
@@ -11,7 +17,9 @@ import greenecomall.dto.request.RegisterRequest;
 import greenecomall.dto.request.UpdateNewsRequest;
 import greenecomall.entity.User;
 import greenecomall.entity.Withdrawal;
+import greenecomall.enums.AdminActionType;
 import greenecomall.enums.NewsStatus;
+import greenecomall.service.AdminAuditService;
 import greenecomall.service.AuthService;
 import greenecomall.service.NewsService;
 import greenecomall.service.PaymentService;
@@ -33,6 +41,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
@@ -60,16 +69,58 @@ public class AdminController {
     private final PaymentService paymentService;
     private final TreeService treeService;
     private final NewsService newsService;
+    private final AdminAuditService auditService;
 
-    @Operation(summary = "Список пользователей",
-            description = "Возвращает всех пользователей с пагинацией.")
+    @Operation(
+            summary = "Список пользователей",
+            description = """
+                    Возвращает пользователей с пагинацией и фильтрацией.
+
+                    **Параметры фильтрации (все необязательны, комбинируются):**
+                    - `search` — поиск по ФИО (имя/фамилия) или номеру паспорта, регистронезависимо
+                    - `status` — статус аккаунта: `PENDING` | `ACTIVE` | `BLOCKED`
+                    - `level` — текущий уровень: 0–4
+                    - `stage` — текущий этап: 1–4
+                    """)
     @GetMapping("/users")
     public ResponseEntity<ApiResponse<Page<User>>> getUsers(
-            @Parameter(description = "Статус: PENDING | ACTIVE | BLOCKED") @RequestParam(required = false) AccountStatus status,
+            @Parameter(description = "Поиск по ФИО или паспорту")
+            @RequestParam(required = false) String search,
+            @Parameter(description = "Статус: PENDING | ACTIVE | BLOCKED")
+            @RequestParam(required = false) AccountStatus status,
+            @Parameter(description = "Уровень 0–4")
+            @RequestParam(required = false) Integer level,
+            @Parameter(description = "Этап 1–4")
+            @RequestParam(required = false) Integer stage,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
+
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return ResponseEntity.ok(ApiResponse.ok(userRepository.findAll(pageable)));
+
+        org.springframework.data.jpa.domain.Specification<User> spec =
+                org.springframework.data.jpa.domain.Specification.where(
+                        (root, query, cb) -> cb.notEqual(root.get("role"), greenecomall.enums.Role.ADMIN)
+                );
+
+        if (search != null && !search.isBlank()) {
+            String pattern = "%" + search.trim().toLowerCase() + "%";
+            spec = spec.and((root, query, cb) -> cb.or(
+                    cb.like(cb.lower(root.get("firstName")),  pattern),
+                    cb.like(cb.lower(root.get("lastName")),   pattern),
+                    cb.like(cb.lower(root.get("passportNumber")), pattern)
+            ));
+        }
+        if (status != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("accountStatus"), status));
+        }
+        if (level != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("currentLevel"), level));
+        }
+        if (stage != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("currentStage"), stage));
+        }
+
+        return ResponseEntity.ok(ApiResponse.ok(userRepository.findAll(spec, pageable)));
     }
 
     @Operation(summary = "Карточка пользователя")
@@ -86,11 +137,14 @@ public class AdminController {
 
     @Operation(summary = "Заблокировать пользователя")
     @PatchMapping("/users/{id}/block")
-    public ResponseEntity<ApiResponse<Void>> blockUser(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<Void>> blockUser(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
         user.setAccountStatus(AccountStatus.BLOCKED);
         userRepository.save(user);
+        auditService.log(admin, AdminActionType.USER_BLOCKED, id,
+                user.getFirstName() + " " + user.getLastName(), null);
         return ResponseEntity.ok(ApiResponse.ok());
     }
 
@@ -152,8 +206,12 @@ public class AdminController {
 
     @Operation(summary = "Одобрить заявку на вывод")
     @PatchMapping("/withdrawals/{id}/approve")
-    public ResponseEntity<ApiResponse<WithdrawalItemResponse>> approveWithdrawal(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<WithdrawalItemResponse>> approveWithdrawal(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
         Withdrawal w = withdrawalService.approve(id);
+        auditService.log(admin, AdminActionType.WITHDRAWAL_APPROVED, id,
+                w.getUser().getFirstName() + " " + w.getUser().getLastName(),
+                w.getAmount() + " сом");
         return ResponseEntity.ok(ApiResponse.ok(toWithdrawalItem(w)));
     }
 
@@ -162,8 +220,12 @@ public class AdminController {
     @PatchMapping("/withdrawals/{id}/reject")
     public ResponseEntity<ApiResponse<WithdrawalItemResponse>> rejectWithdrawal(
             @PathVariable UUID id,
-            @RequestBody Map<String, String> body) {
+            @RequestBody Map<String, String> body,
+            @AuthenticationPrincipal User admin) {
         Withdrawal w = withdrawalService.reject(id, body.get("note"));
+        auditService.log(admin, AdminActionType.WITHDRAWAL_REJECTED, id,
+                w.getUser().getFirstName() + " " + w.getUser().getLastName(),
+                body.get("note"));
         return ResponseEntity.ok(ApiResponse.ok(toWithdrawalItem(w)));
     }
 
@@ -184,20 +246,61 @@ public class AdminController {
                 .build();
     }
 
-    @Operation(summary = "Распределение участников по уровням",
-            description = "Возвращает количество активных участников на каждом уровне (1-4).")
+    @Operation(
+            summary = "Распределение участников по уровням и этапам",
+            description = """
+                    Возвращает количество активных участников (без ADMIN) по уровням 0–4
+                    с разбивкой по этапам. Уровень 0 = Fast Start.
+
+                    Пример ответа:
+                    ```json
+                    {
+                      "total": 78,
+                      "byLevel": {
+                        "level0": { "total": 1,  "stages": {"stage1": 1} },
+                        "level1": { "total": 77, "stages": {"stage1": 50, "stage2": 20, "stage3": 5, "stage4": 2} },
+                        "level2": { "total": 0,  "stages": {} },
+                        "level3": { "total": 0,  "stages": {} },
+                        "level4": { "total": 0,  "stages": {} }
+                      }
+                    }
+                    ```
+                    """)
     @GetMapping("/stats/distribution")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getLevelDistribution() {
-        List<Object[]> rows = userRepository.countByCurrentLevel();
-        Map<String, Long> byLevel = new LinkedHashMap<>();
-        for (int i = 1; i <= 4; i++) byLevel.put("level" + i, 0L);
-        for (Object[] row : rows) {
-            Integer lvl = (Integer) row[0];
-            Long count  = (Long) row[1];
-            if (lvl != null && lvl >= 1 && lvl <= 4) byLevel.put("level" + lvl, count);
+        List<Object[]> rows = userRepository.countByCurrentLevelAndStage();
+
+        // Инициализируем уровни 0–4
+        Map<String, Object> byLevel = new LinkedHashMap<>();
+        for (int i = 0; i <= 4; i++) {
+            Map<String, Object> levelMap = new LinkedHashMap<>();
+            levelMap.put("total", 0L);
+            levelMap.put("stages", new LinkedHashMap<String, Long>());
+            byLevel.put("level" + i, levelMap);
         }
-        long total = byLevel.values().stream().mapToLong(Long::longValue).sum();
-        return ResponseEntity.ok(ApiResponse.ok(Map.of("total", total, "byLevel", byLevel)));
+
+        long grandTotal = 0L;
+        for (Object[] row : rows) {
+            int lvl    = ((Number) row[0]).intValue();
+            int stg    = ((Number) row[1]).intValue();
+            long count = ((Number) row[2]).longValue();
+            if (lvl < 0 || lvl > 4) continue;
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> levelMap = (Map<String, Object>) byLevel.get("level" + lvl);
+            levelMap.put("total", (Long) levelMap.get("total") + count);
+
+            @SuppressWarnings("unchecked")
+            Map<String, Long> stages = (Map<String, Long>) levelMap.get("stages");
+            stages.put("stage" + stg, count);
+
+            grandTotal += count;
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", grandTotal);
+        result.put("byLevel", byLevel);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Добавить участника (создать аккаунт вручную)",
@@ -208,8 +311,11 @@ public class AdminController {
                     """)
     @PostMapping("/users")
     public ResponseEntity<ApiResponse<Map<String, Object>>> createUser(
-            @Valid @RequestBody RegisterRequest req) {
+            @Valid @RequestBody RegisterRequest req,
+            @AuthenticationPrincipal User admin) {
         var result = authService.registerByAdmin(req);
+        auditService.log(admin, AdminActionType.USER_CREATED, result.userId(),
+                req.firstName() + " " + req.lastName(), null);
         return ResponseEntity.ok(ApiResponse.ok(Map.of(
                 "userId", result.userId(),
                 "paymentId", result.paymentId()
@@ -220,8 +326,12 @@ public class AdminController {
             description = "Администратор может вручную активировать аккаунт пользователя, обходя оплату. " +
                     "Запускает полный флоу активации: размещение в дереве, начисление реферальных бонусов.")
     @PatchMapping("/users/{id}/activate")
-    public ResponseEntity<ApiResponse<Void>> activateUser(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<Void>> activateUser(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
         paymentService.activateUserById(id);
+        User u = userRepository.findById(id).orElse(null);
+        auditService.log(admin, AdminActionType.USER_ACTIVATED, id,
+                u != null ? u.getFirstName() + " " + u.getLastName() : null, null);
         return ResponseEntity.ok(ApiResponse.ok());
     }
 
@@ -260,39 +370,52 @@ public class AdminController {
                     Возвращает список что было исправлено.
                     """)
     @PostMapping("/repair/tree-positions")
-    public ResponseEntity<ApiResponse<List<String>>> repairTreePositions() {
+    public ResponseEntity<ApiResponse<List<String>>> repairTreePositions(
+            @AuthenticationPrincipal User admin) {
         List<String> report = treeService.repairMissingPositions();
+        auditService.log(admin, AdminActionType.REPAIR_TREE_POSITIONS, null,
+                null, report.size() + " исправлено");
         return ResponseEntity.ok(ApiResponse.ok(report));
     }
 
     @Operation(summary = "Repair: завершить Stage 1 для участников, у которых матрица уже полная",
             description = "Находит всех Stage-1 пользователей где tier1+tier2 >= 6, но onStage1Completed не был вызван (последний слот заняли ускорители). Вызывает переход вручную.")
     @PostMapping("/repair/stage1-completions")
-    public ResponseEntity<ApiResponse<List<String>>> repairStage1Completions() {
+    public ResponseEntity<ApiResponse<List<String>>> repairStage1Completions(
+            @AuthenticationPrincipal User admin) {
         List<String> report = treeService.repairMissingStage1Completions();
+        auditService.log(admin, AdminActionType.REPAIR_STAGE1_COMPLETIONS, null,
+                null, report.size() + " исправлено");
         return ResponseEntity.ok(ApiResponse.ok(report));
     }
 
     @Operation(summary = "Repair: разместить Stage-2 участников которые не были связаны в дереве",
             description = "Находит активных участников на Stage 2+, которые не являются чьим-либо fixedPartnerLeft/Right, и повторно запускает размещение. Исправляет отвязанные поддеревья.")
     @PostMapping("/repair/stage2-placements")
-    public ResponseEntity<ApiResponse<List<String>>> repairStage2Placements() {
+    public ResponseEntity<ApiResponse<List<String>>> repairStage2Placements(
+            @AuthenticationPrincipal User admin) {
         List<String> report = treeService.repairStage2Placements();
+        auditService.log(admin, AdminActionType.REPAIR_STAGE2_PLACEMENTS, null,
+                null, report.size() + " исправлено");
         return ResponseEntity.ok(ApiResponse.ok(report));
     }
 
     @Operation(summary = "Repair: завершить Stage 3 для участников у которых вся команда уже на Stage 3",
             description = "Ищет участников на Stage 3, у которых оба fixedPartner уже >=Stage3, и вызывает onStage3Completed.")
     @PostMapping("/repair/stage3-completions")
-    public ResponseEntity<ApiResponse<List<String>>> repairStage3Completions() {
+    public ResponseEntity<ApiResponse<List<String>>> repairStage3Completions(
+            @AuthenticationPrincipal User admin) {
         List<String> report = treeService.repairStage3Completions();
+        auditService.log(admin, AdminActionType.REPAIR_STAGE3_COMPLETIONS, null,
+                null, report.size() + " исправлено");
         return ResponseEntity.ok(ApiResponse.ok(report));
     }
 
     @Operation(summary = "Принудительно завершить Stage 2 для пользователя",
             description = "Вызывает onStage2Completed если оба fixed-partner слота уже заполнены, но стейдж не обновился. Тело: { \"userId\": \"uuid\" }")
     @PostMapping("/repair/trigger-stage2-complete")
-    public ResponseEntity<ApiResponse<String>> triggerStage2Complete(@RequestBody Map<String, UUID> body) {
+    public ResponseEntity<ApiResponse<String>> triggerStage2Complete(@RequestBody Map<String, UUID> body,
+            @AuthenticationPrincipal User admin) {
         UUID userId = body.get("userId");
         if (userId == null) throw BusinessException.of(ErrorCode.USER_NOT_FOUND);
         User user = userRepository.findById(userId)
@@ -304,6 +427,8 @@ public class AdminController {
             return ResponseEntity.ok(ApiResponse.ok("SKIPPED: пользователь не на Stage 2 (текущий: " + user.getCurrentStage() + ")"));
         }
         treeService.onStage2Completed(user, user.getCurrentLevel());
+        auditService.log(admin, AdminActionType.STAGE2_TRIGGERED, userId,
+                user.getFirstName() + " " + user.getLastName(), null);
         return ResponseEntity.ok(ApiResponse.ok("OK: " + user.getFirstName() + " " + user.getLastName() + " переведён на Stage 3"));
     }
 
@@ -315,7 +440,8 @@ public class AdminController {
                     """)
     @PostMapping("/repair/move-stage2-partner")
     public ResponseEntity<ApiResponse<String>> moveStage2Partner(
-            @RequestBody Map<String, UUID> body) {
+            @RequestBody Map<String, UUID> body,
+            @AuthenticationPrincipal User admin) {
         UUID userToMoveId = body.get("userToMoveId");
         UUID newHostId    = body.get("newHostId");
         if (userToMoveId == null || newHostId == null) {
@@ -326,6 +452,9 @@ public class AdminController {
         User newHost = userRepository.findById(newHostId)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
         String result = treeService.moveStage2Partner(userToMove, newHost);
+        auditService.log(admin, AdminActionType.STAGE2_PARTNER_MOVED, userToMoveId,
+                userToMove.getFirstName() + " " + userToMove.getLastName(),
+                "→ " + newHost.getFirstName() + " " + newHost.getLastName());
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
@@ -350,7 +479,8 @@ public class AdminController {
                     """)
     @PostMapping("/test/create-users")
     public ResponseEntity<ApiResponse<List<Map<String, String>>>> createTestUsers(
-            @RequestBody List<TestUserEntry> entries) {
+            @RequestBody List<TestUserEntry> entries,
+            @AuthenticationPrincipal User admin) {
 
         List<Map<String, String>> results = new ArrayList<>();
         long base = System.currentTimeMillis() % 10_000_000L;
@@ -383,6 +513,8 @@ public class AdminController {
             }
         }
 
+        auditService.log(admin, AdminActionType.TEST_USERS_CREATED, null,
+                null, results.size() + " пользователей создано");
         return ResponseEntity.ok(ApiResponse.ok(results));
     }
 
@@ -470,52 +602,75 @@ public class AdminController {
     @Operation(summary = "Создать и опубликовать новость")
     @PostMapping("/news")
     public ResponseEntity<ApiResponse<NewsItemResponse>> createNews(
-            @RequestBody @jakarta.validation.Valid CreateNewsRequest req) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.create(req)));
+            @RequestBody @jakarta.validation.Valid CreateNewsRequest req,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.create(req);
+        auditService.log(admin, AdminActionType.NEWS_CREATED, result.id(), result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Сохранить черновик")
     @PostMapping("/news/draft")
     public ResponseEntity<ApiResponse<NewsItemResponse>> saveDraft(
-            @RequestBody @jakarta.validation.Valid CreateNewsRequest req) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.saveDraft(req)));
+            @RequestBody @jakarta.validation.Valid CreateNewsRequest req,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.saveDraft(req);
+        auditService.log(admin, AdminActionType.NEWS_DRAFT_SAVED, result.id(), result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Редактировать новость")
     @PutMapping("/news/{id}")
     public ResponseEntity<ApiResponse<NewsItemResponse>> updateNews(
             @PathVariable UUID id,
-            @RequestBody UpdateNewsRequest req) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.update(id, req)));
+            @RequestBody UpdateNewsRequest req,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.update(id, req);
+        auditService.log(admin, AdminActionType.NEWS_UPDATED, id, result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Опубликовать черновик/запланированную")
     @PatchMapping("/news/{id}/publish")
-    public ResponseEntity<ApiResponse<NewsItemResponse>> publishNews(@PathVariable UUID id) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.publish(id)));
+    public ResponseEntity<ApiResponse<NewsItemResponse>> publishNews(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.publish(id);
+        auditService.log(admin, AdminActionType.NEWS_PUBLISHED, id, result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Архивировать новость")
     @PatchMapping("/news/{id}/archive")
-    public ResponseEntity<ApiResponse<NewsItemResponse>> archiveNews(@PathVariable UUID id) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.archive(id)));
+    public ResponseEntity<ApiResponse<NewsItemResponse>> archiveNews(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.archive(id);
+        auditService.log(admin, AdminActionType.NEWS_ARCHIVED, id, result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Восстановить из архива (переводит в черновик)")
     @PatchMapping("/news/{id}/restore")
-    public ResponseEntity<ApiResponse<NewsItemResponse>> restoreNews(@PathVariable UUID id) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.restore(id)));
+    public ResponseEntity<ApiResponse<NewsItemResponse>> restoreNews(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.restore(id);
+        auditService.log(admin, AdminActionType.NEWS_RESTORED, id, result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Закрепить / открепить новость")
     @PatchMapping("/news/{id}/pin")
-    public ResponseEntity<ApiResponse<NewsItemResponse>> togglePin(@PathVariable UUID id) {
-        return ResponseEntity.ok(ApiResponse.ok(newsService.togglePin(id)));
+    public ResponseEntity<ApiResponse<NewsItemResponse>> togglePin(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        NewsItemResponse result = newsService.togglePin(id);
+        auditService.log(admin, AdminActionType.NEWS_PINNED, id, result.title(), null);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @Operation(summary = "Удалить новость навсегда")
     @DeleteMapping("/news/{id}")
-    public ResponseEntity<ApiResponse<Void>> deleteNews(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<Void>> deleteNews(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        auditService.log(admin, AdminActionType.NEWS_DELETED, id, null, null);
         newsService.delete(id);
         return ResponseEntity.ok(ApiResponse.ok());
     }
@@ -534,17 +689,48 @@ public class AdminController {
     @PostMapping("/news/{id}/media")
     public ResponseEntity<ApiResponse<greenecomall.dto.response.NewsMediaResponse>> addNewsMedia(
             @PathVariable UUID id,
-            @RequestBody java.util.Map<String, String> body) {
+            @RequestBody java.util.Map<String, String> body,
+            @AuthenticationPrincipal User admin) {
         String objectKey = body.get("objectKey");
-        return ResponseEntity.ok(ApiResponse.ok(newsService.addMedia(id, objectKey)));
+        var result = newsService.addMedia(id, objectKey);
+        auditService.log(admin, AdminActionType.NEWS_MEDIA_ADDED, id, null, objectKey);
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @Operation(
+            summary = "Комментарии к новости",
+            description = "Возвращает все комментарии к новости постранично (новые снизу). Работает для любого статуса новости.")
+    @GetMapping("/news/{id}/comments")
+    public ResponseEntity<ApiResponse<Page<NewsCommentResponse>>> getNewsComments(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return ResponseEntity.ok(ApiResponse.ok(newsService.adminGetComments(id, page, size)));
+    }
+
+    @Operation(
+            summary = "Удалить комментарий (админ)",
+            description = "Администратор может удалить любой комментарий к любой новости.")
+    @DeleteMapping("/news/{id}/comments/{commentId}")
+    public ResponseEntity<ApiResponse<Void>> deleteNewsComment(
+            @PathVariable UUID id,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal User admin) {
+        newsService.adminDeleteComment(id, commentId);
+        auditService.log(admin, AdminActionType.NEWS_COMMENT_DELETED, commentId, null,
+                "newsId=" + id);
+        return ResponseEntity.ok(ApiResponse.ok());
     }
 
     @Operation(summary = "Удалить медиа из новости", description = "Удаляет медиа-вложение из новости и из хранилища.")
     @DeleteMapping("/news/{id}/media/{mediaId}")
     public ResponseEntity<ApiResponse<Void>> deleteNewsMedia(
             @PathVariable UUID id,
-            @PathVariable UUID mediaId) {
+            @PathVariable UUID mediaId,
+            @AuthenticationPrincipal User admin) {
         newsService.deleteMedia(id, mediaId);
+        auditService.log(admin, AdminActionType.NEWS_MEDIA_DELETED, mediaId, null,
+                "newsId=" + id);
         return ResponseEntity.ok(ApiResponse.ok());
     }
 
@@ -627,11 +813,15 @@ public class AdminController {
                     """)
     @PostMapping("/tree/move-accelerator")
     public ResponseEntity<ApiResponse<Void>> moveAccelerator(
-            @Valid @RequestBody greenecomall.dto.request.MoveAcceleratorRequest req) {
+            @Valid @RequestBody greenecomall.dto.request.MoveAcceleratorRequest req,
+            @AuthenticationPrincipal User admin) {
         treeService.adminMoveAccelerator(
                 req.acceleratorOwnerUserId(),
                 req.newParentUserId(),
                 req.level());
+        auditService.log(admin, AdminActionType.ACCELERATOR_MOVED,
+                req.acceleratorOwnerUserId(), null,
+                "→ parent=" + req.newParentUserId() + " level=" + req.level());
         return ResponseEntity.ok(ApiResponse.ok());
     }
 
@@ -646,5 +836,143 @@ public class AdminController {
     public ResponseEntity<ApiResponse<List<greenecomall.dto.response.AcceleratorHistoryResponse>>> getAcceleratorHistory(
             @PathVariable UUID id) {
         return ResponseEntity.ok(ApiResponse.ok(treeService.getAcceleratorHistory(id)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ИСТОРИЯ ВЫВОДОВ И ДЕРЕВО
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(
+            summary = "История выводов пользователя",
+            description = """
+                    Возвращает постраничный список всех заявок на вывод конкретного пользователя,
+                    отсортированных от новых к старым.
+
+                    **status** (необязательно): `PENDING` | `APPROVED` | `REJECTED`
+                    """)
+    @GetMapping("/users/{id}/withdrawals")
+    public ResponseEntity<ApiResponse<Page<WithdrawalItemResponse>>> getUserWithdrawals(
+            @PathVariable UUID id,
+            @Parameter(description = "Статус: PENDING | APPROVED | REJECTED")
+            @RequestParam(required = false) WithdrawalStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Withdrawal> raw = (status != null)
+                ? withdrawalRepository.findByUserAndStatus(user, status, pageable)
+                : withdrawalRepository.findByUser(user, pageable);
+
+        Page<WithdrawalItemResponse> result = raw.map(w -> WithdrawalItemResponse.builder()
+                .id(w.getId())
+                .userId(w.getUser().getId())
+                .userName(w.getUser().getFirstName() + " " + w.getUser().getLastName())
+                .userPhone(w.getUser().getPhone())
+                .amount(w.getAmount())
+                .status(w.getStatus())
+                .method(w.getMethod().name())
+                .requisite(w.getRequisite())
+                .bankName(w.getBankName())
+                .adminNote(w.getAdminNote())
+                .createdAt(w.getCreatedAt())
+                .reviewedAt(w.getReviewedAt())
+                .build());
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @Operation(
+            summary = "Дерево от имени любого пользователя",
+            description = """
+                    Позволяет администратору просматривать дерево любого участника — как будто
+                    тот сам смотрит свой экран. Параметры уровня и этапа те же что у `/api/tree/my`.
+
+                    Используй `userId` первого реального пользователя чтобы увидеть корень всей сети.
+                    """)
+    @GetMapping("/tree/view/{userId}")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.TreeResponse>> viewUserTree(
+            @PathVariable UUID userId,
+            @Parameter(description = "Уровень 1-4", example = "1") @RequestParam(defaultValue = "1") int level,
+            @Parameter(description = "Этап 1-4",   example = "1") @RequestParam(defaultValue = "1") int stage) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getTree(user, level, stage)));
+    }
+
+    @Operation(
+            summary = "Обзор этапов от имени любого пользователя",
+            description = "Показывает все 4 этапа (overview) для указанного участника — аналог `/api/tree/overview`.")
+    @GetMapping("/tree/overview/{userId}")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.StagesOverviewResponse>> viewUserOverview(
+            @PathVariable UUID userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getStagesOverview(user)));
+    }
+
+    @Operation(
+            summary = "Лента активности от имени любого пользователя",
+            description = "Показывает события команды для указанного участника — аналог `/api/tree/activity`.")
+    @GetMapping("/tree/activity/{userId}")
+    public ResponseEntity<ApiResponse<List<greenecomall.dto.response.TeamActivityResponse>>> viewUserActivity(
+            @PathVariable UUID userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getTeamActivity(user)));
+    }
+
+    @Operation(
+            summary = "Статистика веток от имени любого пользователя",
+            description = "Показывает левую и правую ветку дерева для указанного участника — аналог `/api/tree/branches`.")
+    @GetMapping("/tree/branches/{userId}")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.BranchStatsResponse>> viewUserBranches(
+            @PathVariable UUID userId) {
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        return ResponseEntity.ok(ApiResponse.ok(treeService.getBranchStats(user)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ИСТОРИЯ ДЕЙСТВИЙ АДМИНИСТРАТОРА
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(
+            summary = "История действий администраторов",
+            description = """
+                    Возвращает лог всех действий администраторов: блокировки, выводы,
+                    работа с деревом, новости и repair-операции.
+
+                    **Фильтры (все необязательны):**
+                    - `adminId` — показать только действия конкретного администратора
+                    - `actionType` — тип действия (см. enum ниже)
+
+                    **Типы действий (`actionType`):**
+                    `USER_BLOCKED` | `USER_ACTIVATED` | `USER_CREATED` |
+                    `WITHDRAWAL_APPROVED` | `WITHDRAWAL_REJECTED` |
+                    `ACCELERATOR_MOVED` | `STAGE2_PARTNER_MOVED` | `STAGE2_TRIGGERED` |
+                    `REPAIR_TREE_POSITIONS` | `REPAIR_STAGE1_COMPLETIONS` |
+                    `REPAIR_STAGE2_PLACEMENTS` | `REPAIR_STAGE3_COMPLETIONS` |
+                    `NEWS_CREATED` | `NEWS_DRAFT_SAVED` | `NEWS_UPDATED` |
+                    `NEWS_PUBLISHED` | `NEWS_ARCHIVED` | `NEWS_RESTORED` |
+                    `NEWS_PINNED` | `NEWS_DELETED` | `NEWS_COMMENT_DELETED` |
+                    `NEWS_MEDIA_ADDED` | `NEWS_MEDIA_DELETED` |
+                    `TEST_USERS_CREATED` | `TEST_FAST_START_USERS_CREATED`
+                    """)
+    @GetMapping("/activity")
+    public ResponseEntity<ApiResponse<Page<AdminActionLogResponse>>> getAdminActivity(
+            @Parameter(description = "ID администратора (необязательно)")
+            @RequestParam(required = false) UUID adminId,
+            @Parameter(description = "Тип действия (необязательно)")
+            @RequestParam(required = false) AdminActionType actionType,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.ok(
+                auditService.getHistory(adminId, actionType, page, size)));
     }
 }

@@ -52,10 +52,10 @@ public class LevelsController {
         int curStage = user.getCurrentStage();
 
         List<LevelsOverviewResponse.LevelInfo> levels = List.of(
-                buildLevel(1, "Старт", new BigDecimal("10000"), curLevel, curStage),
-                buildLevel(2, "Партнёр", new BigDecimal("50000"), curLevel, curStage),
-                buildLevel(3, "Лидер", new BigDecimal("200000"), curLevel, curStage),
-                buildLevel(4, "Акционер", new BigDecimal("1000000"), curLevel, curStage)
+                buildLevel(1, "Уровень 1", new BigDecimal("10000"), curLevel, curStage),
+                buildLevel(2, "Уровень 2", new BigDecimal("50000"), curLevel, curStage),
+                buildLevel(3, "Уровень 3", new BigDecimal("200000"), curLevel, curStage),
+                buildLevel(4, "Уровень 4", new BigDecimal("1000000"), curLevel, curStage)
         );
 
         return ResponseEntity.ok(ApiResponse.ok(LevelsOverviewResponse.builder()
@@ -71,18 +71,10 @@ public class LevelsController {
         boolean isCompleted = level < curLevel;
 
         List<LevelsOverviewResponse.StageInfo> stages = List.of(
-                buildStage(level, 1, "Формирование команды",
-                        "Прямой бонус за 6 участников",
-                        directBonus(level), "CASH", isCurrent, curStage, isCompleted),
-                buildStage(level, 2, "Domkrat — гонка партнёров",
-                        "Закрепление двух партнёров",
-                        BigDecimal.ZERO, "NONE", isCurrent, curStage, isCompleted),
-                buildStage(level, 3, "Leader Core",
-                        stage3BonusDesc(level),
-                        stage3BonusAmount(level), stage3BonusType(level), isCurrent, curStage, isCompleted),
-                buildStage(level, 4, "Переход на следующий уровень",
-                        level < 4 ? "Вся команда переходит на уровень " + (level + 1) : "Статус Акционера",
-                        BigDecimal.ZERO, "LEVEL_UP", isCurrent, curStage, isCompleted)
+                buildStage(level, 1, isCurrent, curStage, isCompleted),
+                buildStage(level, 2, isCurrent, curStage, isCompleted),
+                buildStage(level, 3, isCurrent, curStage, isCompleted),
+                buildStage(level, 4, isCurrent, curStage, isCompleted)
         );
 
         return LevelsOverviewResponse.LevelInfo.builder()
@@ -95,52 +87,165 @@ public class LevelsController {
                 .build();
     }
 
-    private LevelsOverviewResponse.StageInfo buildStage(int level, int stage, String title,
-            String bonusDesc, BigDecimal bonusAmount, String bonusType,
+    private LevelsOverviewResponse.StageInfo buildStage(int level, int stage,
             boolean isCurLevel, int curStage, boolean levelCompleted) {
         boolean isCurrent   = isCurLevel && stage == curStage;
         boolean isCompleted = levelCompleted || (isCurLevel && stage < curStage);
 
+        StageReward r = reward(level, stage);
+
         return LevelsOverviewResponse.StageInfo.builder()
                 .stage(stage)
-                .title(title)
-                .bonusDescription(bonusDesc)
-                .bonusAmount(bonusAmount)
-                .bonusType(bonusType)
+                .title(r.title())
+                .bonusDescription(r.description())
+                .bonusAmount(r.amount())
+                .bonusType(r.type())
                 .isCurrentStage(isCurrent)
                 .isCompleted(isCompleted)
+                .completionModal(LevelsOverviewResponse.CompletionModal.builder()
+                        .title("Поздравляем!")
+                        .message(r.modalMessage())
+                        .build())
                 .build();
     }
 
-    private BigDecimal directBonus(int level) {
+    // ── Данные по каждому этапу ───────────────────────────────────────────────
+
+    private record StageReward(String title, String description, BigDecimal amount,
+                               String type, String modalMessage) {}
+
+    private StageReward reward(int level, int stage) {
         return switch (level) {
-            case 1 -> new BigDecimal("1250");
-            case 2 -> new BigDecimal("11000");
-            case 3 -> new BigDecimal("22000");
-            case 4 -> new BigDecimal("110000");
-            default -> BigDecimal.ZERO;
+
+            case 1 -> switch (stage) {
+                case 1 -> new StageReward(
+                        "Формирование команды",
+                        "5 000 сом",
+                        new BigDecimal("5000"),
+                        "CASH",
+                        "Вы завершили 1 этап и получили бонус 5 000 сом! " +
+                        "Впереди ждут ещё большие достижения!");
+                case 2 -> new StageReward(
+                        "Гонка партнёров",
+                        "11 000 сом",
+                        new BigDecimal("11000"),
+                        "CASH",
+                        "Вы завершили 2 этап и получили бонус 11 000 сом! " +
+                        "Продолжайте в том же духе!");
+                case 3 -> new StageReward(
+                        "Лидерский этап",
+                        "25 000 сом",
+                        new BigDecimal("25000"),
+                        "CASH",
+                        "Отличная работа! Вы получили бонус 25 000 сом. " +
+                        "Впереди ещё большие достижения!");
+                case 4 -> new StageReward(
+                        "Переход на Уровень 2",
+                        "Бесплатный переход + продукция от компании на $500",
+                        BigDecimal.ZERO,
+                        "LEVEL_UP",
+                        "Вы завершили Уровень 1! Вас ждёт бесплатный переход на Уровень 2 " +
+                        "и продукция от компании на сумму 500$ в подарок на ваш выбор!");
+                default -> empty();
+            };
+
+            case 2 -> switch (stage) {
+                case 1 -> new StageReward(
+                        "Формирование команды",
+                        "11 000 сом",
+                        new BigDecimal("11000"),
+                        "CASH",
+                        "Вы завершили 1 этап Уровня 2 и получили бонус 11 000 сом!");
+                case 2 -> new StageReward(
+                        "Поддержка команды",
+                        "Ускоритель + бесплатная продукция от компании",
+                        BigDecimal.ZERO,
+                        "ACCELERATOR",
+                        "Вы завершили 2 этап! Вам выдаётся ускоритель для поддержки команды " +
+                        "и бесплатная продукция от компании в подарок!");
+                case 3 -> new StageReward(
+                        "Лидерский этап",
+                        "100 000 сом",
+                        new BigDecimal("100000"),
+                        "CASH",
+                        "Невероятный результат! Вы получили бонус 100 000 сом!");
+                case 4 -> new StageReward(
+                        "Переход на Уровень 3",
+                        "Бесплатный переход + продукция от компании на $2 000",
+                        BigDecimal.ZERO,
+                        "LEVEL_UP",
+                        "Вы завершили Уровень 2! Вас ждёт бесплатный переход на Уровень 3 " +
+                        "и продукция от компании на сумму 2 000$ в подарок на ваш выбор!");
+                default -> empty();
+            };
+
+            case 3 -> switch (stage) {
+                case 1 -> new StageReward(
+                        "Формирование команды",
+                        "44 000 сом",
+                        new BigDecimal("44000"),
+                        "CASH",
+                        "Вы завершили 1 этап Уровня 3 и получили бонус 44 000 сом!");
+                case 2 -> new StageReward(
+                        "Гонка партнёров",
+                        "44 000 сом",
+                        new BigDecimal("44000"),
+                        "CASH",
+                        "Вы завершили 2 этап и получили бонус 44 000 сом! Вы на верном пути!");
+                case 3 -> new StageReward(
+                        "Лидерский этап",
+                        "Автомобиль стоимостью $12 000",
+                        BigDecimal.ZERO,
+                        "CAR",
+                        "Поздравляем! Вы заработали автомобиль стоимостью 12 000$! " +
+                        "Это награда за ваш выдающийся результат!");
+                case 4 -> new StageReward(
+                        "Переход на Уровень 4",
+                        "Бесплатный переход + продукция от компании на $10 000",
+                        BigDecimal.ZERO,
+                        "LEVEL_UP",
+                        "Вы завершили Уровень 3! Вас ждёт бесплатный переход на Уровень 4 " +
+                        "и продукция от компании на сумму 10 000$ в подарок на ваш выбор!");
+                default -> empty();
+            };
+
+            case 4 -> switch (stage) {
+                case 1 -> new StageReward(
+                        "Формирование команды",
+                        "220 000 сом",
+                        new BigDecimal("220000"),
+                        "CASH",
+                        "Вы завершили 1 этап Уровня 4 и получили бонус 220 000 сом!");
+                case 2 -> new StageReward(
+                        "Гонка партнёров",
+                        "220 000 сом",
+                        new BigDecimal("220000"),
+                        "CASH",
+                        "Вы завершили 2 этап и получили бонус 220 000 сом! " +
+                        "Вы достигли невероятных высот!");
+                case 3 -> new StageReward(
+                        "Лидерский этап",
+                        "Автомобиль стоимостью $25 000",
+                        BigDecimal.ZERO,
+                        "CAR",
+                        "Поздравляем! Вы заработали автомобиль стоимостью 25 000$! " +
+                        "Вы входите в элиту GreenEcoMall!");
+                case 4 -> new StageReward(
+                        "Вершина — Акционер",
+                        "Квартира стоимостью $80 000",
+                        BigDecimal.ZERO,
+                        "APARTMENT",
+                        "Поздравляем с достижением наивысшего уровня! " +
+                        "Вы получаете квартиру стоимостью 80 000$! " +
+                        "Добро пожаловать в статус Акционера GreenEcoMall!");
+                default -> empty();
+            };
+
+            default -> empty();
         };
     }
 
-    private BigDecimal stage3BonusAmount(int level) {
-        return switch (level) {
-            case 1 -> new BigDecimal("25000");
-            case 2 -> new BigDecimal("100000");
-            default -> BigDecimal.ZERO;  // physical reward for levels 3 & 4
-        };
-    }
-
-    private String stage3BonusDesc(int level) {
-        return switch (level) {
-            case 1 -> "Этапный бонус 25 000 сом";
-            case 2 -> "Этапный бонус 100 000 сом";
-            case 3 -> "Автомобиль BMW";
-            case 4 -> "Квартира";
-            default -> "";
-        };
-    }
-
-    private String stage3BonusType(int level) {
-        return level <= 2 ? "CASH" : "REWARD";
+    private StageReward empty() {
+        return new StageReward("", "", BigDecimal.ZERO, "NONE", "");
     }
 }

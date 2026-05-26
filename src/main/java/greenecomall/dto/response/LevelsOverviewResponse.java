@@ -27,8 +27,15 @@ public record LevelsOverviewResponse(
             String title,
             String bonusDescription,
             BigDecimal bonusAmount,
-            String bonusType,  // "CASH" | "REWARD"
+            String bonusType,  // "CASH" | "LEVEL_UP" | "ACCELERATOR" | "CAR" | "APARTMENT"
             boolean isCurrentStage,
-            boolean isCompleted
+            boolean isCompleted,
+            CompletionModal completionModal
+    ) {}
+
+    @Builder
+    public record CompletionModal(
+            String title,
+            String message
     ) {}
 }

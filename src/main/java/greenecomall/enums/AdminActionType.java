@@ -1,0 +1,40 @@
+package greenecomall.enums;
+
+public enum AdminActionType {
+    // Пользователи
+    USER_BLOCKED,
+    USER_ACTIVATED,
+    USER_CREATED,
+
+    // Выводы
+    WITHDRAWAL_APPROVED,
+    WITHDRAWAL_REJECTED,
+
+    // Дерево / ускорители
+    ACCELERATOR_MOVED,
+    STAGE2_PARTNER_MOVED,
+    STAGE2_TRIGGERED,
+
+    // Repair
+    REPAIR_TREE_POSITIONS,
+    REPAIR_STAGE1_COMPLETIONS,
+    REPAIR_STAGE2_PLACEMENTS,
+    REPAIR_STAGE3_COMPLETIONS,
+
+    // Новости
+    NEWS_CREATED,
+    NEWS_DRAFT_SAVED,
+    NEWS_UPDATED,
+    NEWS_PUBLISHED,
+    NEWS_ARCHIVED,
+    NEWS_RESTORED,
+    NEWS_PINNED,
+    NEWS_DELETED,
+    NEWS_COMMENT_DELETED,
+    NEWS_MEDIA_ADDED,
+    NEWS_MEDIA_DELETED,
+
+    // Тестовые данные
+    TEST_USERS_CREATED,
+    TEST_FAST_START_USERS_CREATED
+}

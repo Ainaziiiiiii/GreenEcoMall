@@ -136,6 +136,26 @@ public class NewsService {
         newsMediaRepository.delete(media);
     }
 
+    // ── Комментарии (для админа — любая новость без статус-ограничений) ──────
+
+    @Transactional(readOnly = true)
+    public Page<NewsCommentResponse> adminGetComments(UUID newsId, int page, int size) {
+        News news = findOrThrow(newsId);
+        PageRequest pageable = PageRequest.of(page, size, Sort.by("createdAt").ascending());
+        return newsCommentRepository.findByNewsOrderByCreatedAtAsc(news, pageable)
+                .map(c -> toComment(c, null));
+    }
+
+    @Transactional
+    public void adminDeleteComment(UUID newsId, UUID commentId) {
+        NewsComment comment = newsCommentRepository.findById(commentId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        if (!comment.getNews().getId().equals(newsId)) {
+            throw BusinessException.of(ErrorCode.USER_NOT_FOUND);
+        }
+        newsCommentRepository.delete(comment);
+    }
+
     // ── Админские ───────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -150,11 +170,16 @@ public class NewsService {
     @Transactional(readOnly = true)
     public NewsStatsResponse getStats() {
         LocalDateTime monthStart = LocalDateTime.now().withDayOfMonth(1).toLocalDate().atStartOfDay();
+        long published  = newsRepository.countByStatus(NewsStatus.PUBLISHED);
+        long scheduled  = newsRepository.countByStatus(NewsStatus.SCHEDULED);
+        long draft      = newsRepository.countByStatus(NewsStatus.DRAFT);
+        long archived   = newsRepository.countByStatus(NewsStatus.ARCHIVED);
         return NewsStatsResponse.builder()
-                .publishedCount(newsRepository.countByStatus(NewsStatus.PUBLISHED))
-                .scheduledCount(newsRepository.countByStatus(NewsStatus.SCHEDULED))
-                .draftCount(newsRepository.countByStatus(NewsStatus.DRAFT))
-                .archivedCount(newsRepository.countByStatus(NewsStatus.ARCHIVED))
+                .totalCount(published + scheduled + draft + archived)
+                .publishedCount(published)
+                .scheduledCount(scheduled)
+                .draftCount(draft)
+                .archivedCount(archived)
                 .viewsThisMonth(newsRepository.sumViewsSince(monthStart))
                 .build();
     }

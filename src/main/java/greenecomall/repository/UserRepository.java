@@ -5,6 +5,7 @@ import greenecomall.enums.AccountStatus;
 import greenecomall.enums.Role;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,7 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-public interface UserRepository extends JpaRepository<User, UUID> {
+public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificationExecutor<User> {
 
     Optional<User> findByPhone(String phone);
 
@@ -32,8 +33,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     @Query("SELECT u FROM User u WHERE u.id = :id")
     Optional<User> findByIdForUpdate(@Param("id") UUID id);
 
-    @Query("SELECT u.currentLevel, COUNT(u) FROM User u WHERE u.accountStatus = 'ACTIVE' GROUP BY u.currentLevel ORDER BY u.currentLevel")
-    List<Object[]> countByCurrentLevel();
+    @Query("SELECT u.currentLevel, u.currentStage, COUNT(u) FROM User u WHERE u.accountStatus = 'ACTIVE' AND u.role != 'ADMIN' GROUP BY u.currentLevel, u.currentStage ORDER BY u.currentLevel, u.currentStage")
+    List<Object[]> countByCurrentLevelAndStage();
 
     boolean existsByFixedPartnerLeft(User user);
     boolean existsByFixedPartnerRight(User user);

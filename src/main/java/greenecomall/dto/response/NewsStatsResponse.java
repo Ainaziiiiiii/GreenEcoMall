@@ -4,6 +4,7 @@ import lombok.Builder;
 
 @Builder
 public record NewsStatsResponse(
+        long totalCount,
         long publishedCount,
         long scheduledCount,
         long draftCount,

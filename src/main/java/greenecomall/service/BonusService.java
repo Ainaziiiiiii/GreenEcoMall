@@ -112,36 +112,29 @@ public class BonusService {
     }
 
     /**
-     * Бонус за завершение Этапа 1:
+     * Бонус за завершение Этапа 1 — пропорционально реальным людям в матрице.
      *
-     * Итоговый бонус root = baseBonus − externalTier1.size() × 1250
-     * (baseBonus уже включает и 1250 за тир-1, и 625 за тир-2 — всё входит в одну сумму)
+     * root получает:
+     *   • 1250 × ownTier1.size()   — тир-1, пришедшие по реф-ссылке самого root
+     *   • 625  × tier2Members.size() — все реальные тир-2
      *
-     * Если тир-1 участник пришёл по чужой реф-ссылке, его 1250 уходит тому инвайтеру,
-     * а из суммы root вычитается 1250. Дивиденды за тир-2 (625) root получает ВСЕГДА
-     * и они уже заложены в baseBonus — отдельно НЕ начисляются.
-     *
-     * Пример (уровень 1, базовый бонус 5000):
-     *   Оба тир-1 по своей реф.: root = 5000 (= 1250+1250+625+625+625+625)
-     *   1 тир-1 внешний:         root = 3750, внешний инвайтер = 1250
-     *   Оба тир-1 внешние:       root = 2500, каждый внешний инвайтер = 1250
-     *
-     * @param root          кто завершил Этап 1
-     * @param level         уровень
-     * @param externalTier1 тир-1 участники, чей inviter != root
-     * @param tier2Members  не используется (оставлен для совместимости вызова)
+     * externalTier1 (тир-1 по чужой реф.) приносят 1250 своему инвайтеру, а не root.
+     * Ускорители не считаются — они не попадают ни в один из списков.
      */
     @Transactional
     public void createStage1Bonuses(User root, int level,
-                                    List<User> externalTier1, List<User> tier2Members) {
-        BigDecimal baseBonus = STAGE1_BONUS.getOrDefault(level, BigDecimal.ZERO);
-        BigDecimal deduction = MEMBER_REFERRAL.multiply(BigDecimal.valueOf(externalTier1.size()));
-        BigDecimal rootBonus = baseBonus.subtract(deduction).max(BigDecimal.ZERO);
+                                    List<User> ownTier1,
+                                    List<User> externalTier1,
+                                    List<User> tier2Members) {
+        BigDecimal rootBonus = MEMBER_REFERRAL.multiply(BigDecimal.valueOf(ownTier1.size()))
+                .add(TIER2_DIVIDEND.multiply(BigDecimal.valueOf(tier2Members.size())));
 
         if (rootBonus.compareTo(BigDecimal.ZERO) > 0) {
+            String note = "своих тир-1: " + ownTier1.size()
+                    + ", тир-2: " + tier2Members.size()
+                    + (externalTier1.isEmpty() ? "" : ", внешних тир-1: " + externalTier1.size());
             creditBonus(root, BonusType.STAGE, rootBonus, "KGS", level, 1,
-                    "Бонус за завершение Этапа 1 (Уровень " + level + ")"
-                    + (externalTier1.isEmpty() ? "" : " — " + externalTier1.size() + " уч. пришли по чужим реф."));
+                    "Бонус за завершение Этапа 1 (Уровень " + level + ") — " + note);
         }
 
         for (User member : externalTier1) {

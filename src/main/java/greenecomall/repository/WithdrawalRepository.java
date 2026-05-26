@@ -17,6 +17,8 @@ public interface WithdrawalRepository extends JpaRepository<Withdrawal, UUID> {
 
     Page<Withdrawal> findByUser(User user, Pageable pageable);
 
+    Page<Withdrawal> findByUserAndStatus(User user, WithdrawalStatus status, Pageable pageable);
+
     Page<Withdrawal> findByStatus(WithdrawalStatus status, Pageable pageable);
 
     Page<Withdrawal> findByStatusAndCreatedAtAfter(WithdrawalStatus status, LocalDateTime after, Pageable pageable);

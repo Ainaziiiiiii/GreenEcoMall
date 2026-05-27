@@ -2,17 +2,23 @@ package greenecomall.service;
 
 import greenecomall.dto.request.*;
 import greenecomall.dto.response.InviterResponse;
+import greenecomall.dto.response.LoginHistoryResponse;
 import greenecomall.dto.response.LoginResponse;
 import greenecomall.dto.response.RegisterResponse;
+import greenecomall.entity.LoginHistory;
 import greenecomall.entity.OtpCode;
 import greenecomall.entity.Payment;
 import greenecomall.entity.User;
 import greenecomall.enums.*;
 import greenecomall.exception.BusinessException;
 import greenecomall.exception.ErrorCode;
+import greenecomall.repository.LoginHistoryRepository;
 import greenecomall.repository.OtpCodeRepository;
 import greenecomall.repository.PaymentRepository;
 import greenecomall.repository.UserRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import greenecomall.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +39,7 @@ public class AuthService {
     private final UserRepository userRepository;
     private final OtpCodeRepository otpCodeRepository;
     private final PaymentRepository paymentRepository;
+    private final LoginHistoryRepository loginHistoryRepository;
     private final JwtUtil jwtUtil;
     private final PasswordEncoder passwordEncoder;
     private final SmsService smsService;
@@ -174,7 +181,8 @@ public class AuthService {
         userRepository.save(user);
     }
 
-    public LoginResponse login(LoginRequest req) {
+    @Transactional
+    public LoginResponse login(LoginRequest req, String ipAddress, String userAgent) {
         User user = userRepository.findByPhone(req.phone())
                 .orElseThrow(() -> BusinessException.of(ErrorCode.INVALID_CREDENTIALS));
 
@@ -186,11 +194,18 @@ public class AuthService {
             throw BusinessException.of(ErrorCode.ACCOUNT_BLOCKED);
         }
 
+        loginHistoryRepository.save(LoginHistory.builder()
+                .user(user)
+                .phone(req.phone())
+                .ipAddress(ipAddress)
+                .userAgent(userAgent != null && userAgent.length() > 512
+                        ? userAgent.substring(0, 512) : userAgent)
+                .build());
+
         if (user.getAccountStatus() == AccountStatus.PENDING) {
             Payment payment = paymentRepository
                     .findFirstByUserAndTypeOrderByCreatedAtDesc(user, PaymentType.ENTRY_FEE)
                     .orElse(null);
-            // Выдаём токен даже для PENDING — нужен для вызова /api/payment/create-qr
             return LoginResponse.builder()
                     .needsPayment(true)
                     .paymentId(payment != null ? payment.getId() : null)
@@ -206,6 +221,19 @@ public class AuthService {
                 .userId(user.getId())
                 .role(user.getRole().name())
                 .build();
+    }
+
+    @Transactional(readOnly = true)
+    public Page<LoginHistoryResponse> getLoginHistory(User user, int page, int size) {
+        return loginHistoryRepository
+                .findByUserOrderByCreatedAtDesc(user, PageRequest.of(page, size, Sort.by("createdAt").descending()))
+                .map(h -> LoginHistoryResponse.builder()
+                        .id(h.getId())
+                        .phone(h.getPhone())
+                        .ipAddress(h.getIpAddress())
+                        .userAgent(h.getUserAgent())
+                        .createdAt(h.getCreatedAt())
+                        .build());
     }
 
     public LoginResponse refresh(String refreshToken) {

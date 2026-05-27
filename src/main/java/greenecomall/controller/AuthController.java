@@ -3,15 +3,9 @@ package greenecomall.controller;
 import greenecomall.dto.request.*;
 import greenecomall.dto.response.ApiResponse;
 import greenecomall.dto.response.InviterResponse;
-import greenecomall.dto.response.LoginHistoryResponse;
 import greenecomall.dto.response.LoginResponse;
 import greenecomall.dto.response.RegisterResponse;
-import greenecomall.entity.User;
 import greenecomall.service.AuthService;
-import greenecomall.repository.UserRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -34,7 +28,6 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
-    private final UserRepository userRepository;
 
     @Operation(summary = "[ШАГ 2/5] Отправить OTP",
             description = """
@@ -121,18 +114,6 @@ public class AuthController {
         String ip = resolveClientIp(httpRequest);
         String ua = httpRequest.getHeader("User-Agent");
         return ResponseEntity.ok(ApiResponse.ok(authService.login(req, ip, ua)));
-    }
-
-    @Operation(summary = "История входов в аккаунт")
-    @GetMapping("/login-history")
-    public ResponseEntity<ApiResponse<Page<LoginHistoryResponse>>> loginHistory(
-            @AuthenticationPrincipal UserDetails principal,
-            @RequestParam(defaultValue = "0")  int page,
-            @RequestParam(defaultValue = "20") int size) {
-        User user = userRepository.findByPhone(principal.getUsername())
-                .orElseThrow(() -> greenecomall.exception.BusinessException.of(
-                        greenecomall.exception.ErrorCode.USER_NOT_FOUND));
-        return ResponseEntity.ok(ApiResponse.ok(authService.getLoginHistory(user, page, size)));
     }
 
     private String resolveClientIp(HttpServletRequest req) {

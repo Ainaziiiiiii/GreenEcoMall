@@ -2,12 +2,15 @@ package greenecomall.controller;
 
 import greenecomall.dto.request.UpdateProfileRequest;
 import greenecomall.dto.response.ApiResponse;
+import greenecomall.dto.response.LoginHistoryResponse;
 import greenecomall.dto.response.NotificationResponse;
 import greenecomall.dto.response.UserProfileResponse;
 import greenecomall.entity.Notification;
 import greenecomall.entity.User;
+import greenecomall.service.AuthService;
 import greenecomall.service.NotificationService;
 import greenecomall.service.UserService;
+import org.springframework.data.domain.Page;
 import org.springframework.beans.factory.annotation.Value;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -31,6 +34,7 @@ public class UserController {
 
     private final UserService userService;
     private final NotificationService notificationService;
+    private final AuthService authService;
 
     @Value("${app.base-url:https://green-eco-mall-client.up.railway.app}")
     private String baseUrl;
@@ -97,6 +101,15 @@ public class UserController {
                 "referralLink", link,
                 "qrContent", link
         )));
+    }
+
+    @Operation(summary = "История входов в аккаунт")
+    @GetMapping("/login-history")
+    public ResponseEntity<ApiResponse<Page<LoginHistoryResponse>>> loginHistory(
+            @AuthenticationPrincipal User user,
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(ApiResponse.ok(authService.getLoginHistory(user, page, size)));
     }
 
     private NotificationResponse toResponse(Notification n) {

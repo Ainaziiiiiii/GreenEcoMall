@@ -3,6 +3,7 @@ package greenecomall.controller;
 import greenecomall.dto.response.AdminActionLogResponse;
 import greenecomall.dto.response.AdminStatsResponse;
 import greenecomall.dto.response.ApiResponse;
+import greenecomall.dto.response.BonusResponse;
 import greenecomall.dto.response.BranchStatsResponse;
 import greenecomall.dto.response.NewsCommentResponse;
 import greenecomall.dto.response.NewsItemResponse;
@@ -12,16 +13,22 @@ import greenecomall.dto.response.TeamActivityResponse;
 import greenecomall.dto.response.TreeResponse;
 import greenecomall.dto.response.WithdrawalItemResponse;
 import greenecomall.dto.response.WithdrawalStatsResponse;
+import greenecomall.entity.Bonus;
 import greenecomall.dto.request.CreateNewsRequest;
 import greenecomall.dto.request.RegisterRequest;
 import greenecomall.dto.request.UpdateNewsRequest;
 import greenecomall.entity.User;
 import greenecomall.entity.Withdrawal;
 import greenecomall.enums.AdminActionType;
+import greenecomall.enums.BonusStatus;
+import greenecomall.enums.BonusType;
 import greenecomall.enums.NewsStatus;
+import greenecomall.enums.NotificationType;
+import greenecomall.enums.Role;
 import greenecomall.service.AdminAuditService;
 import greenecomall.service.AuthService;
 import greenecomall.service.NewsService;
+import greenecomall.service.NotificationService;
 import greenecomall.service.PaymentService;
 import greenecomall.service.TreeService;
 import greenecomall.service.WithdrawalService;
@@ -67,9 +74,11 @@ public class AdminController {
     private final BonusRepository bonusRepository;
     private final AuthService authService;
     private final PaymentService paymentService;
+    private final PaymentRepository paymentRepository;
     private final TreeService treeService;
     private final NewsService newsService;
     private final AdminAuditService auditService;
+    private final NotificationService notificationService;
 
     @Operation(
             summary = "Список пользователей",
@@ -146,6 +155,153 @@ public class AdminController {
         auditService.log(admin, AdminActionType.USER_BLOCKED, id,
                 user.getFirstName() + " " + user.getLastName(), null);
         return ResponseEntity.ok(ApiResponse.ok());
+    }
+
+    @Operation(summary = "Вступительные взносы (оплаченные)",
+            description = "Список успешно оплаченных взносов (ENTRY_FEE, status=SUCCESS), сортировка по дате убыванием.")
+    @GetMapping("/payments/entry-fees")
+    public ResponseEntity<ApiResponse<Page<greenecomall.dto.response.AdminPaymentResponse>>> getEntryFees(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(page, size);
+
+        Page<greenecomall.dto.response.AdminPaymentResponse> result =
+                paymentRepository.findPaidEntryFees(pageable)
+                        .map(p -> new greenecomall.dto.response.AdminPaymentResponse(
+                                p.getId(),
+                                p.getUser().getId(),
+                                p.getUser().getFirstName(),
+                                p.getUser().getLastName(),
+                                p.getUser().getPhone(),
+                                p.getUser().getRegistrationPlan(),
+                                p.getAmount(),
+                                p.getStatus(),
+                                p.getCreatedAt(),
+                                p.getPaidAt()
+                        ));
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @Operation(summary = "Непройденные вступительные взносы (PENDING / FAILED / EXPIRED)",
+            description = "Платежи, которые ещё не оплачены или упали. Можно вручную поменять статус через PATCH /payments/{id}/status.")
+    @GetMapping("/payments/entry-fees/unpaid")
+    public ResponseEntity<ApiResponse<Page<greenecomall.dto.response.AdminPaymentResponse>>> getUnpaidEntryFees(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(page, size);
+
+        Page<greenecomall.dto.response.AdminPaymentResponse> result =
+                paymentRepository.findUnpaidEntryFees(pageable)
+                        .map(p -> new greenecomall.dto.response.AdminPaymentResponse(
+                                p.getId(),
+                                p.getUser().getId(),
+                                p.getUser().getFirstName(),
+                                p.getUser().getLastName(),
+                                p.getUser().getPhone(),
+                                p.getUser().getRegistrationPlan(),
+                                p.getAmount(),
+                                p.getStatus(),
+                                p.getCreatedAt(),
+                                p.getPaidAt()
+                        ));
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @Operation(summary = "Вручную изменить статус платежа",
+            description = """
+                    Позволяет вручную перевести платёж в нужный статус.
+                    Если статус меняется на **SUCCESS** — пользователь автоматически активируется (как при реальной оплате).
+                    Допустимые статусы: `SUCCESS`, `FAILED`, `EXPIRED`.
+                    """)
+    @PatchMapping("/payments/{id}/status")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.AdminPaymentResponse>> updatePaymentStatus(
+            @PathVariable UUID id,
+            @RequestBody Map<String, String> body,
+            @AuthenticationPrincipal User admin) {
+
+        greenecomall.enums.PaymentStatus newStatus;
+        try {
+            newStatus = greenecomall.enums.PaymentStatus.valueOf(body.get("status").toUpperCase());
+        } catch (Exception e) {
+            throw BusinessException.of(ErrorCode.NOT_FOUND);
+        }
+
+        greenecomall.entity.Payment payment = paymentRepository.findById(id)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.PAYMENT_NOT_FOUND));
+
+        payment.setStatus(newStatus);
+        if (newStatus == greenecomall.enums.PaymentStatus.SUCCESS) {
+            payment.setPaidAt(java.time.LocalDateTime.now());
+            paymentRepository.save(payment);
+            paymentService.activateUserById(payment.getUser().getId());
+        } else {
+            paymentRepository.save(payment);
+        }
+
+        auditService.log(admin, AdminActionType.PAYMENT_STATUS_CHANGED, id,
+                payment.getUser().getFirstName() + " " + payment.getUser().getLastName(),
+                newStatus.name());
+
+        return ResponseEntity.ok(ApiResponse.ok(new greenecomall.dto.response.AdminPaymentResponse(
+                payment.getId(),
+                payment.getUser().getId(),
+                payment.getUser().getFirstName(),
+                payment.getUser().getLastName(),
+                payment.getUser().getPhone(),
+                payment.getUser().getRegistrationPlan(),
+                payment.getAmount(),
+                payment.getStatus(),
+                payment.getCreatedAt(),
+                payment.getPaidAt()
+        )));
+    }
+
+    @Operation(summary = "Статистика вступительных взносов",
+            description = "totalCount, totalAmount, todayCount, todayAmount, pendingCount")
+    @GetMapping("/payments/entry-fees/stats")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.EntryFeeStatsResponse>> getEntryFeeStats() {
+        java.time.LocalDateTime todayStart = java.time.LocalDate.now().atStartOfDay();
+        return ResponseEntity.ok(ApiResponse.ok(new greenecomall.dto.response.EntryFeeStatsResponse(
+                paymentRepository.countPaidEntryFees(),
+                paymentRepository.sumSuccessfulEntryFees(),
+                paymentRepository.countPaidEntryFeesSince(todayStart),
+                paymentRepository.sumPaidEntryFeesSince(todayStart),
+                paymentRepository.countPendingEntryFees()
+        )));
+    }
+
+    @Operation(summary = "Финансовое досье пользователя",
+            description = """
+                    Баланс, бонусы по типам (реферальные / структурные / дивиденды),
+                    итого выведено и сумма ожидающих выводов.
+                    Вызывается по кнопке «Подробнее» рядом с заявкой на вывод.
+                    """)
+    @GetMapping("/users/{userId}/finance")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.UserFinanceResponse>> getUserFinance(
+            @PathVariable UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+
+        BigDecimal stage = bonusRepository.sumConfirmedByUserAndType(user, greenecomall.enums.BonusType.STAGE)
+                .add(bonusRepository.sumConfirmedByUserAndType(user, greenecomall.enums.BonusType.REFERRAL_DIRECT))
+                .add(bonusRepository.sumConfirmedByUserAndType(user, greenecomall.enums.BonusType.REFERRAL_INDIRECT))
+                .add(bonusRepository.sumConfirmedByUserAndType(user, greenecomall.enums.BonusType.DIVIDEND));
+        BigDecimal total = bonusRepository.sumByUserAndStatus(user, greenecomall.enums.BonusStatus.CONFIRMED);
+
+        return ResponseEntity.ok(ApiResponse.ok(new greenecomall.dto.response.UserFinanceResponse(
+                user.getId(),
+                user.getFirstName() + " " + user.getLastName(),
+                user.getPhone(),
+                user.getBalance(),
+                stage,
+                total,
+                withdrawalRepository.sumApprovedByUser(user),
+                withdrawalRepository.sumPendingByUser(user)
+        )));
     }
 
     @Operation(summary = "Статистика выплат — 4 карточки вверху",
@@ -458,6 +614,50 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
+    @Operation(summary = "Переставить пользователя в дереве вручную",
+            description = """
+                    Структурная правка дерева: меняет позицию пользователя под новым родителем.
+
+                    **Что делает:**
+                    - Переставляет запись в `tree_positions`
+                    - Для `stage=2` также обновляет `fixedPartnerLeft/Right` у старого и нового родителя
+
+                    **Что НЕ делает (намеренно):**
+                    - Не пересчитывает бонусы
+                    - Не вызывает завершение этапов
+                    - Не запускает алгоритм размещения
+
+                    Используй только для ручного исправления ошибок алгоритма.
+                    После перестановки при необходимости вызови `/repair/trigger-stage2` или `/repair/stage2-placements`.
+
+                    **position:** `1` = левый слот, `2` = правый слот
+                    """)
+    @PostMapping("/tree/reposition-user")
+    public ResponseEntity<ApiResponse<String>> repositionUser(
+            @RequestBody Map<String, Object> body,
+            @AuthenticationPrincipal User admin) {
+
+        UUID userId      = UUID.fromString((String) body.get("userId"));
+        UUID newParentId = UUID.fromString((String) body.get("newParentId"));
+        int  position    = (Integer) body.get("position");
+        int  level       = (Integer) body.get("level");
+        int  stage       = (Integer) body.get("stage");
+
+        User user      = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        User newParent = userRepository.findById(newParentId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+
+        String result = treeService.moveUserPosition(user, newParent, position, level, stage);
+
+        auditService.log(admin, AdminActionType.USER_REPOSITIONED, userId,
+                user.getFirstName() + " " + user.getLastName(),
+                "→ " + newParent.getFirstName() + " " + newParent.getLastName()
+                + " pos=" + position + " L" + level + "S" + stage);
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
     // ── Тестовые пользователи ────────────────────────────────────────────────
 
     @Operation(
@@ -497,8 +697,8 @@ public class AdminController {
                         ? e.lastName() : "User" + idx;
 
                 greenecomall.dto.request.RegisterRequest req = new greenecomall.dto.request.RegisterRequest(
-                        firstName, lastName, phone, "TEST" + idx, "test123456",
-                        e.inviterCode(), null, "testword");
+                        firstName, lastName, phone, null, "TEST" + idx, "test123456",
+                        e.inviterCode(), null);
 
                 greenecomall.dto.response.RegisterResponse reg = authService.registerByAdmin(req);
                 paymentService.activateUserById(reg.userId());
@@ -519,6 +719,46 @@ public class AdminController {
     }
 
     public record TestUserEntry(String firstName, String lastName, String inviterCode, Integer count) {}
+
+    @Operation(
+            summary = "Быстрая регистрация тестового пользователя",
+            description = """
+                    Только имя, фамилия и реферальный код — телефон, паспорт и пароль генерируются автоматически.
+                    Аккаунт сразу активируется. Пароль всегда `test123456`.
+
+                    Пример:
+                    ```json
+                    { "firstName": "Айгуль", "lastName": "Иванова", "referralCode": "GEMADMIN" }
+                    ```
+                    """)
+    @PostMapping("/test/quick-register")
+    public ResponseEntity<ApiResponse<Map<String, String>>> quickRegister(
+            @RequestBody QuickRegisterRequest req) {
+
+        long idx = System.currentTimeMillis() % 100_000_000L;
+        String phone    = "+99672" + String.format("%07d", idx);
+        String passport = "QR" + idx;
+
+        greenecomall.dto.request.RegisterRequest regReq = new greenecomall.dto.request.RegisterRequest(
+                req.firstName(), req.lastName(), phone, req.email(), passport,
+                "test123456", req.referralCode(), null);
+
+        greenecomall.dto.response.RegisterResponse reg = authService.registerByAdmin(regReq);
+        paymentService.activateUserById(reg.userId());
+
+        greenecomall.entity.User created = userRepository.findById(reg.userId()).orElseThrow();
+
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("name",         created.getFirstName() + " " + created.getLastName());
+        result.put("userId",       created.getId().toString());
+        result.put("phone",        phone);
+        result.put("password",     "test123456");
+        result.put("referralCode", created.getReferralCode());
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    public record QuickRegisterRequest(String firstName, String lastName, String referralCode, String email) {}
 
     @Operation(
             summary = "Создать тестовых пользователей Уровня 0 (Fast Start)",
@@ -557,11 +797,11 @@ public class AdminController {
                 greenecomall.dto.request.RegisterRequest req = new greenecomall.dto.request.RegisterRequest(
                         firstName, lastName,
                         phone,
+                        null,
                         "FST" + idx,
                         "test123456",
                         e.inviterCode(),
-                        greenecomall.enums.RegistrationPlan.FAST_START,
-                        "testword"
+                        greenecomall.enums.RegistrationPlan.FAST_START
                 );
 
                 greenecomall.dto.response.RegisterResponse reg = authService.registerByAdmin(req);
@@ -734,6 +974,174 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.ok());
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // РАЗБЛОКИРОВКА
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(summary = "Разблокировать пользователя")
+    @PatchMapping("/users/{id}/unblock")
+    public ResponseEntity<ApiResponse<Void>> unblockUser(@PathVariable UUID id,
+            @AuthenticationPrincipal User admin) {
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        user.setAccountStatus(AccountStatus.ACTIVE);
+        userRepository.save(user);
+        auditService.log(admin, AdminActionType.USER_UNBLOCKED, id,
+                user.getFirstName() + " " + user.getLastName(), null);
+        return ResponseEntity.ok(ApiResponse.ok());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ИСТОРИЯ БОНУСОВ ПОЛЬЗОВАТЕЛЯ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(summary = "История бонусов пользователя",
+            description = "Фильтры: type (REFERRAL|STAGE_BONUS|...), status (PENDING|CONFIRMED|CANCELLED). Сортировка: новые сверху.")
+    @GetMapping("/users/{id}/bonuses")
+    public ResponseEntity<ApiResponse<Page<BonusResponse>>> getUserBonuses(
+            @PathVariable UUID id,
+            @RequestParam(required = false) BonusType type,
+            @RequestParam(required = false) BonusStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+
+        Page<Bonus> raw;
+        if (type != null && status != null) {
+            raw = bonusRepository.findByUserAndTypeAndStatus(user, type, status, pageable);
+        } else if (type != null) {
+            raw = bonusRepository.findByUserAndType(user, type, pageable);
+        } else if (status != null) {
+            raw = bonusRepository.findByUserAndStatus(user, status, pageable);
+        } else {
+            raw = bonusRepository.findByUser(user, pageable);
+        }
+
+        Page<BonusResponse> result = raw.map(b -> BonusResponse.builder()
+                .id(b.getId())
+                .type(b.getType())
+                .amount(b.getAmount())
+                .status(b.getStatus())
+                .level(b.getLevel())
+                .stage(b.getStage())
+                .description(b.getDescription())
+                .fromUserName(b.getFromUser() != null
+                        ? b.getFromUser().getFirstName() + " " + b.getFromUser().getLastName() : null)
+                .confirmedAt(b.getConfirmedAt())
+                .createdAt(b.getCreatedAt())
+                .build());
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ОТПРАВИТЬ УВЕДОМЛЕНИЕ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(summary = "Отправить уведомление",
+            description = """
+                    Отправляет внутреннее уведомление (и опционально email) одному пользователю или всем активным.
+                    - `userId` — если null, рассылка всем активным участникам
+                    - `sendEmail` — дополнительно отправить письмо на email (только у кого он указан)
+                    """)
+    @PostMapping("/notifications/send")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> sendNotification(
+            @RequestBody SendNotificationRequest req,
+            @AuthenticationPrincipal User admin) {
+
+        List<User> targets;
+        if (req.userId() != null) {
+            targets = List.of(userRepository.findById(req.userId())
+                    .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND)));
+        } else {
+            targets = userRepository.findAll().stream()
+                    .filter(u -> u.getAccountStatus() == AccountStatus.ACTIVE
+                            && u.getRole() != Role.ADMIN)
+                    .toList();
+        }
+
+        int sent = 0;
+        for (User u : targets) {
+            notificationService.send(u, NotificationType.ANNOUNCEMENT, req.title(), req.body());
+            sent++;
+        }
+
+        auditService.log(admin, AdminActionType.NOTIFICATION_SENT, req.userId(),
+                req.title(), "push=" + sent);
+        return ResponseEntity.ok(ApiResponse.ok(Map.of("notificationsSent", sent)));
+    }
+
+    public record SendNotificationRequest(UUID userId, String title, String body) {}
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // РЕЙТИНГ РЕФЕРАЛОВ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(summary = "Топ рефералов",
+            description = "Возвращает топ-N пользователей по количеству приглашённых активных участников. По умолчанию топ-20.")
+    @GetMapping("/stats/referrals")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getTopReferrers(
+            @RequestParam(defaultValue = "20") int limit) {
+
+        Pageable pageable = PageRequest.of(0, limit);
+        List<Object[]> rows = userRepository.findTopReferrers(pageable);
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object[] row : rows) {
+            User u = (User) row[0];
+            long count = ((Number) row[1]).longValue();
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("userId", u.getId());
+            item.put("name", u.getFirstName() + " " + u.getLastName());
+            item.put("phone", u.getPhone());
+            item.put("referralCode", u.getReferralCode());
+            item.put("invitedCount", count);
+            result.add(item);
+        }
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ЭКСПОРТ ВЫВОДОВ В CSV
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Operation(summary = "Экспорт заявок на вывод в CSV",
+            description = "Скачивает CSV с заявками на вывод. Фильтр `status`: PENDING | APPROVED | REJECTED (без фильтра — все).")
+    @GetMapping(value = "/export/withdrawals", produces = "text/csv")
+    public ResponseEntity<byte[]> exportWithdrawals(
+            @RequestParam(required = false) WithdrawalStatus status) {
+
+        List<Withdrawal> withdrawals = status != null
+                ? withdrawalRepository.findByStatus(status, Pageable.unpaged()).getContent()
+                : withdrawalRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
+
+        StringBuilder csv = new StringBuilder();
+        csv.append("ID,Пользователь,Телефон,Сумма,Статус,Метод,Реквизиты,Банк,Примечание,Создано,Рассмотрено\n");
+        for (Withdrawal w : withdrawals) {
+            csv.append(w.getId()).append(',')
+               .append(escape(w.getUser().getFirstName() + " " + w.getUser().getLastName())).append(',')
+               .append(w.getUser().getPhone()).append(',')
+               .append(w.getAmount()).append(',')
+               .append(w.getStatus()).append(',')
+               .append(w.getMethod()).append(',')
+               .append(escape(w.getRequisite())).append(',')
+               .append(escape(w.getBankName())).append(',')
+               .append(escape(w.getAdminNote())).append(',')
+               .append(w.getCreatedAt() != null ? w.getCreatedAt().toLocalDate() : "").append(',')
+               .append(w.getReviewedAt() != null ? w.getReviewedAt().toLocalDate() : "").append('\n');
+        }
+
+        byte[] bytes = csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"withdrawals.csv\"")
+                .contentType(MediaType.parseMediaType("text/csv; charset=UTF-8"))
+                .body(bytes);
+    }
+
     private String escape(String value) {
         if (value == null) return "";
         if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
@@ -783,7 +1191,7 @@ public class AdminController {
         long totalUsers = userRepository.count();
         long activeUsers = userRepository.countByAccountStatus(AccountStatus.ACTIVE);
         long pendingWithdrawals = withdrawalRepository.countByStatus(WithdrawalStatus.PENDING);
-        BigDecimal totalVolume = bonusRepository.sumTotalConfirmed();
+        BigDecimal totalVolume = paymentRepository.sumSuccessfulEntryFees();
 
         return ResponseEntity.ok(ApiResponse.ok(AdminStatsResponse.builder()
                 .totalUsers(totalUsers)
@@ -974,5 +1382,81 @@ public class AdminController {
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(ApiResponse.ok(
                 auditService.getHistory(adminId, actionType, page, size)));
+    }
+
+    @Operation(summary = "Аналитика доходов по каждому пользователю",
+            description = """
+                    Для каждого участника показывает с позиции платформы:
+                    — paidToAdmin       : взнос, который сам пользователь заплатил платформе
+                    — teamSize          : сколько активных человек в его команде (прямые рефералы)
+                    — teamPaidToAdmin   : сумма взносов его команды, поступивших платформе
+                    — totalAdminIncome  : итого доход платформы с него + его команды
+                    — userEarned        : сколько сам пользователь заработал (подтверждённые бонусы)
+
+                    Только ACTIVE пользователи, без ADMIN.
+                    """)
+    @GetMapping("/analytics/roi")
+    public ResponseEntity<ApiResponse<Page<greenecomall.dto.response.UserRoiResponse>>> getRoiAnalytics(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        Pageable pageable = PageRequest.of(page, size);
+        Page<User> users = userRepository.findAll(
+                (root, query, cb) -> cb.and(
+                        cb.equal(root.get("accountStatus"), AccountStatus.ACTIVE),
+                        cb.notEqual(root.get("role"), greenecomall.enums.Role.ADMIN)
+                ), pageable);
+
+        Page<greenecomall.dto.response.UserRoiResponse> result = users.map(u -> {
+            BigDecimal paidToAdmin     = paymentRepository.sumPaidEntryFeeByUser(u);
+            long teamSize              = userRepository.countByInviterAndAccountStatus(u, AccountStatus.ACTIVE);
+            BigDecimal teamPaid        = paymentRepository.sumPaidEntryFeeByTeam(u);
+            BigDecimal totalAdminIncome = paidToAdmin.add(teamPaid);
+            BigDecimal userEarned      = bonusRepository.sumByUserAndStatus(u, greenecomall.enums.BonusStatus.CONFIRMED);
+
+            return new greenecomall.dto.response.UserRoiResponse(
+                    u.getId(),
+                    u.getFirstName() + " " + u.getLastName(),
+                    u.getPhone(),
+                    u.getRegistrationPlan(),
+                    paidToAdmin,
+                    teamSize,
+                    teamPaid,
+                    totalAdminIncome,
+                    userEarned
+            );
+        });
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @Operation(summary = "Суммарная аналитика платформы",
+            description = """
+                    Общие цифры по всей платформе:
+                    — totalActiveUsers       : всего активных участников
+                    — totalAdminIncome       : итого собрано взносов платформой
+                    — totalUserEarned        : итого выплачено бонусов участникам
+                    — avgAdminIncomePerUser  : средний доход платформы на участника
+                    — avgUserEarned          : средний заработок участника
+                    """)
+    @GetMapping("/analytics/summary")
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.RoiSummaryResponse>> getAnalyticsSummary() {
+        long activeUsers      = userRepository.countByAccountStatus(AccountStatus.ACTIVE);
+        BigDecimal totalFees  = paymentRepository.sumSuccessfulEntryFees();
+        BigDecimal totalBonus = bonusRepository.sumTotalConfirmed();
+        BigDecimal avgIncome  = activeUsers > 0
+                ? totalFees.divide(BigDecimal.valueOf(activeUsers), 2, java.math.RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        BigDecimal avgEarned  = activeUsers > 0
+                ? totalBonus.divide(BigDecimal.valueOf(activeUsers), 2, java.math.RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        return ResponseEntity.ok(ApiResponse.ok(new greenecomall.dto.response.RoiSummaryResponse(
+                activeUsers,
+                totalFees,
+                totalBonus,
+                avgIncome,
+                avgEarned
+        )));
     }
 }

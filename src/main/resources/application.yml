@@ -20,9 +20,9 @@ spring:
     baseline-on-migrate: true
 
 jwt:
-  secret: greenecomall-super-secret-key-must-be-at-least-256-bits-long-for-hs256
-  access-token-expiration: 9000000       # 15 minutes
-  refresh-token-expiration: 2592000000  # 30 days
+  secret: ${JWT_SECRET:greenecomall-super-secret-key-must-be-at-least-256-bits-long-for-hs256}
+  access-token-expiration: 2592000000        # 15 minutes
+  refresh-token-expiration: 2592000000   # 30 days
 
 app:
   base-url: ${APP_BASE_URL:https://green-eco-mall-client.up.railway.app}
@@ -35,6 +35,12 @@ app:
     max-requests-per-hour: 5
   payment:
     qr-expiration-minutes: 30
+  fee:
+    fast-start: 1     # взнос для Fast Start (Level 0)
+    level1: 1         # взнос для Level 1 (STANDARD)
+    level2: 1         # взнос для Level 2
+    level3: 1         # взнос для Level 3
+    level4: 1
   finik:
     api-key: 0c0z3IkpXz294LV7YslMK2PIqrQtCGcR4mDXPyq8
     account-id: 717233df-1a6b-4f5d-ba95-2d311eb8d302

@@ -5,6 +5,7 @@ import greenecomall.dto.response.ApiResponse;
 import greenecomall.dto.response.LoginHistoryResponse;
 import greenecomall.dto.response.NotificationResponse;
 import greenecomall.dto.response.UserProfileResponse;
+import greenecomall.dto.response.UserProgressResponse;
 import greenecomall.entity.Notification;
 import greenecomall.entity.User;
 import greenecomall.service.AuthService;
@@ -85,6 +86,26 @@ public class UserController {
     public ResponseEntity<ApiResponse<Void>> markAllRead(@AuthenticationPrincipal User user) {
         notificationService.markAllRead(user);
         return ResponseEntity.ok(ApiResponse.ok());
+    }
+
+    @Operation(summary = "Прогресс по уровням и этапам",
+            description = """
+                    Возвращает реальный прогресс пользователя по всем уровням и этапам.
+
+                    **Статусы уровня:** `SKIPPED` | `COMPLETED` | `CURRENT` | `LOCKED`
+                    **Статусы этапа:** `SKIPPED` | `COMPLETED` | `CURRENT` | `LOCKED`
+
+                    - `SKIPPED` — уровень/этап пропущен (пользователь зарегистрировался с более высокого уровня)
+                    - `bonusEarned` — фактически начисленная сумма из БД (0 если этап не завершён)
+                    - `startingLevel` — с какого уровня пользователь начал (1-4)
+                    - `progressPercent` — % от маршрута пользователя (не от всей системы)
+
+                    ⚠️ Не используй статику для отображения бонусов — `bonusEarned` показывает реальную сумму,
+                    которая может быть меньше максимальной (например если тир-2 пришли не по его ссылке).
+                    """)
+    @GetMapping("/progress")
+    public ResponseEntity<ApiResponse<UserProgressResponse>> getProgress(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.ok(userService.getProgress(user)));
     }
 
     @Operation(summary = "QR-код моей реферальной ссылки",

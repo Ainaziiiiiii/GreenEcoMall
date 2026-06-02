@@ -46,6 +46,9 @@ public class SmsService {
     @Value("${app.otp.max-requests-per-hour:5}")
     private int maxPerHour;
 
+    @Value("${app.otp.bypass-code:}")
+    private String bypassCode;
+
     @Value("${telegram.bot-token:}")
     private String telegramBotToken;
 
@@ -53,55 +56,101 @@ public class SmsService {
     private String telegramDevChatId;
 
     /**
-     * Generates OTP, persists it, sends SMS. Returns the OtpCode's expiresAt.
-     * Throws BusinessException on rate limit or SMS failure.
+     * Generates OTP keyed by phone, delivers via Telegram dev-chat.
+     * Used for password reset — no email or SMS required.
      */
     @Transactional
-    public LocalDateTime sendOtp(String phone) {
-        String formatted = formatPhone(phone);
+    public LocalDateTime sendOtpForPasswordReset(String phone, String displayName) {
+        String key = formatPhone(phone);
 
         long recent = otpCodeRepository.countByPhoneAndCreatedAtAfter(
-                formatted, LocalDateTime.now().minusHours(1));
+                key, LocalDateTime.now().minusHours(1));
         if (recent >= maxPerHour) {
             throw greenecomall.exception.BusinessException.of(
                     greenecomall.exception.ErrorCode.TOO_MANY_OTP_REQUESTS);
         }
 
-        String code      = generateCode();
+        boolean bypass = bypassCode != null && !bypassCode.isBlank();
+        String code = bypass ? bypassCode : generateCode();
         LocalDateTime exp = LocalDateTime.now().plusMinutes(otpTtlMinutes);
 
-        OtpCode otp = OtpCode.builder()
-                .phone(formatted)
+        otpCodeRepository.save(OtpCode.builder()
+                .phone(key)
                 .code(code)
                 .expiresAt(exp)
-                .build();
-        otpCodeRepository.save(otp);
+                .build());
 
-        if (!enabled) {
-            sendViaTelegram(formatted, code);
+        if (bypass) {
+            log.info("[OTP BYPASS] Phone: {} Code: {}", key, code);
             return exp;
         }
 
-        sendViaSmsProApi(formatted, code);
+        sendViaTelegram(phone, code, displayName);
+        return exp;
+    }
+
+    /**
+     * Generates OTP, persists it, delivers via SMS (or Telegram dev-chat when SMS is disabled).
+     */
+    @Transactional
+    public LocalDateTime sendOtp(String phone) {
+        String key = formatPhone(phone);
+
+        long recent = otpCodeRepository.countByPhoneAndCreatedAtAfter(
+                key, LocalDateTime.now().minusHours(1));
+        if (recent >= maxPerHour) {
+            throw greenecomall.exception.BusinessException.of(
+                    greenecomall.exception.ErrorCode.TOO_MANY_OTP_REQUESTS);
+        }
+
+        boolean bypass = bypassCode != null && !bypassCode.isBlank();
+        String code = bypass ? bypassCode : generateCode();
+        LocalDateTime exp = LocalDateTime.now().plusMinutes(otpTtlMinutes);
+
+        otpCodeRepository.save(OtpCode.builder()
+                .phone(key)
+                .code(code)
+                .expiresAt(exp)
+                .build());
+
+        if (bypass) {
+            log.info("[OTP BYPASS] Phone: {} Code: {}", key, code);
+            return exp;
+        }
+
+        if (!enabled) {
+            sendViaTelegram(key, code, null);
+            return exp;
+        }
+
+        sendViaSmsProApi(key, code);
         return exp;
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    private void sendViaTelegram(String phone, String code) {
+    private void sendViaTelegram(String phone, String code, String displayName) {
         if (telegramBotToken.isBlank() || telegramDevChatId.isBlank()) {
             log.warn("[OTP] Telegram not configured. Phone: {} Code: {}", phone, code);
             return;
         }
-        String url = "https://api.telegram.org/bot" + telegramBotToken + "/sendMessage";
-        String text = "🔐 GreenEcoMall OTP\n\nНомер: " + phone + "\nКод: *" + code + "*\n\nДействует 5 минут.";
-        String body = "{\"chat_id\":\"" + telegramDevChatId + "\",\"text\":\"" + text + "\",\"parse_mode\":\"Markdown\"}";
+        String accountLine = (displayName != null && !displayName.isBlank())
+                ? "\n👤 *" + displayName + "*\n📱 " + phone
+                : "\n📱 " + phone;
+        String text = "🔐 *GreenEcoMall — смена пароля*" + accountLine
+                + "\n\n🔑 Код: *" + code + "*"
+                + "\n⏱ Действует " + otpTtlMinutes + " минут.";
+
+        String body = "{\"chat_id\":\"" + telegramDevChatId + "\","
+                + "\"text\":\"" + text.replace("\"", "\\\"") + "\","
+                + "\"parse_mode\":\"Markdown\"}";
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         try {
             ResponseEntity<String> resp = restTemplate.exchange(
-                    url, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+                    "https://api.telegram.org/bot" + telegramBotToken + "/sendMessage",
+                    HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
             log.info("Telegram OTP sent for {}. Response: {}", phone, resp.getBody());
         } catch (Exception e) {
             log.error("Telegram send failed for {}: {}", phone, e.getMessage());

@@ -10,7 +10,7 @@ public enum ErrorCode {
 
     INVALID_REFERRAL_CODE("INVALID_REFERRAL_CODE", "Реферальный код не найден", HttpStatus.BAD_REQUEST),
     PHONE_ALREADY_EXISTS("PHONE_ALREADY_EXISTS", "Телефон уже зарегистрирован", HttpStatus.CONFLICT),
-    PASSPORT_ALREADY_EXISTS("PASSPORT_ALREADY_EXISTS", "Паспорт уже зарегистрирован", HttpStatus.CONFLICT),
+PASSPORT_ALREADY_EXISTS("PASSPORT_ALREADY_EXISTS", "Паспорт уже зарегистрирован", HttpStatus.CONFLICT),
     INVALID_OTP("INVALID_OTP", "Неверный или истёкший OTP", HttpStatus.BAD_REQUEST),
     TOO_MANY_OTP_REQUESTS("TOO_MANY_OTP_REQUESTS", "Превышен лимит OTP запросов (макс 5 в час)", HttpStatus.TOO_MANY_REQUESTS),
     ACCOUNT_NOT_ACTIVATED("ACCOUNT_NOT_ACTIVATED", "Аккаунт не активирован. Оплатите вступительный взнос.", HttpStatus.FORBIDDEN),

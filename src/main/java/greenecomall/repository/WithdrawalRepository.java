@@ -35,4 +35,10 @@ public interface WithdrawalRepository extends JpaRepository<Withdrawal, UUID> {
 
     @Query("SELECT COALESCE(SUM(w.amount), 0) FROM Withdrawal w WHERE w.status = 'APPROVED'")
     BigDecimal sumTotalApproved();
+
+    @Query("SELECT COALESCE(SUM(w.amount), 0) FROM Withdrawal w WHERE w.user = :user AND w.status = 'APPROVED'")
+    BigDecimal sumApprovedByUser(@Param("user") User user);
+
+    @Query("SELECT COALESCE(SUM(w.amount), 0) FROM Withdrawal w WHERE w.user = :user AND w.status = 'PENDING'")
+    BigDecimal sumPendingByUser(@Param("user") User user);
 }

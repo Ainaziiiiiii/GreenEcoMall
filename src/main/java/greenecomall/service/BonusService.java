@@ -32,8 +32,9 @@ public class BonusService {
             4, new BigDecimal("220000")
     );
 
-    // Этап 2: только уровни 3 и 4
+    // Этап 2: уровень 1 (кроме Fast Start), уровни 3 и 4
     private static final Map<Integer, BigDecimal> STAGE2_BONUS = Map.of(
+            1, new BigDecimal("11000"),
             3, new BigDecimal("44000"),
             4, new BigDecimal("220000")
     );
@@ -72,7 +73,9 @@ public class BonusService {
             }
             case 2 -> {
                 BigDecimal amount = STAGE2_BONUS.get(level);
-                if (amount != null) {
+                // Уровень 1, этап 2: бонус только для НЕ Fast Start
+                if (amount != null && !(level == 1
+                        && user.getRegistrationPlan() == greenecomall.enums.RegistrationPlan.FAST_START)) {
                     creditBonus(user, BonusType.STAGE, amount, "KGS", level, stage,
                             "Бонус за завершение Этапа 2 (Уровень " + level + ")");
                 }
@@ -114,29 +117,36 @@ public class BonusService {
     /**
      * Бонус за завершение Этапа 1 — пропорционально реальным людям в матрице.
      *
-     * root получает:
-     *   • 1250 × ownTier1.size()   — тир-1, пришедшие по реф-ссылке самого root
-     *   • 625  × tier2Members.size() — все реальные тир-2
+     * root получает раздельно:
+     *   • REFERRAL_DIRECT : 1250 × ownTier1.size()   — тир-1 по его прямой реф-ссылке
+     *   • DIVIDEND        : 625  × tier2Members.size() — тир-2 (не его прямые рефералы)
      *
      * externalTier1 (тир-1 по чужой реф.) приносят 1250 своему инвайтеру, а не root.
-     * Ускорители не считаются — они не попадают ни в один из списков.
+     * Ускорители не считаются.
      */
     @Transactional
     public void createStage1Bonuses(User root, int level,
                                     List<User> ownTier1,
                                     List<User> externalTier1,
                                     List<User> tier2Members) {
-        BigDecimal rootBonus = MEMBER_REFERRAL.multiply(BigDecimal.valueOf(ownTier1.size()))
-                .add(TIER2_DIVIDEND.multiply(BigDecimal.valueOf(tier2Members.size())));
 
-        if (rootBonus.compareTo(BigDecimal.ZERO) > 0) {
-            String note = "своих тир-1: " + ownTier1.size()
-                    + ", тир-2: " + tier2Members.size()
-                    + (externalTier1.isEmpty() ? "" : ", внешних тир-1: " + externalTier1.size());
-            creditBonus(root, BonusType.STAGE, rootBonus, "KGS", level, 1,
-                    "Бонус за завершение Этапа 1 (Уровень " + level + ") — " + note);
+        // 1250 сом за каждого прямого реферала тир-1
+        if (!ownTier1.isEmpty()) {
+            BigDecimal referralBonus = MEMBER_REFERRAL.multiply(BigDecimal.valueOf(ownTier1.size()));
+            creditBonus(root, BonusType.REFERRAL_DIRECT, referralBonus, "KGS", level, 1,
+                    "Реферальный бонус за тир-1 ×" + ownTier1.size()
+                    + " (Этап 1, Уровень " + level + ")");
         }
 
+        // 625 сом за каждого тир-2 — дивиденд (не прямой реферал root)
+        if (!tier2Members.isEmpty()) {
+            BigDecimal dividendBonus = TIER2_DIVIDEND.multiply(BigDecimal.valueOf(tier2Members.size()));
+            creditBonus(root, BonusType.DIVIDEND, dividendBonus, "KGS", level, 1,
+                    "Дивиденд с тир-2 ×" + tier2Members.size()
+                    + " (Этап 1, Уровень " + level + ")");
+        }
+
+        // 1250 сом инвайтеру за каждого externalTier1
         for (User member : externalTier1) {
             if (member.getInviter() == null) continue;
             User inviter = userRepository.findById(member.getInviter().getId())

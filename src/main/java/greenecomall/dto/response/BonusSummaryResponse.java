@@ -7,9 +7,12 @@ import java.util.Map;
 
 @Builder
 public record BonusSummaryResponse(
+        /** Текущий баланс */
         BigDecimal available,
-        BigDecimal pending,
-        BigDecimal confirmed,
+        /** Итого заработано бонусами */
         BigDecimal total,
+        /** Итого выплачено (выведено) */
+        BigDecimal paid,
+        /** Разбивка по типам бонусов */
         Map<String, BigDecimal> byType
 ) {}

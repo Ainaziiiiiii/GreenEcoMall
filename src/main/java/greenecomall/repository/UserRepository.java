@@ -4,6 +4,7 @@ import greenecomall.entity.User;
 import greenecomall.enums.AccountStatus;
 import greenecomall.enums.Role;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
@@ -28,6 +29,9 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
     long countByAccountStatus(AccountStatus status);
 
     long countByRole(Role role);
+
+    List<User> findByCurrentLevelAndCurrentStageAndAccountStatusOrderByActivatedAtAsc(
+            int level, int stage, AccountStatus status);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT u FROM User u WHERE u.id = :id")
@@ -60,6 +64,8 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
 
     List<User> findByInviter(User inviter);
 
+    long countByInviterAndAccountStatus(User inviter, AccountStatus status);
+
     // Количество новых активных пользователей по дням за период
     @Query("SELECT CAST(u.activatedAt AS date), COUNT(u) FROM User u " +
            "WHERE u.accountStatus = 'ACTIVE' AND u.activatedAt >= :from " +
@@ -69,4 +75,8 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
     // Общее кол-во активных пользователей до определённой даты (для накопительного графика)
     @Query("SELECT COUNT(u) FROM User u WHERE u.accountStatus = 'ACTIVE' AND u.activatedAt < :before")
     long countActiveBefore(@Param("before") LocalDateTime before);
+
+    // Топ рефереров — [User inviter, Long count]
+    @Query("SELECT u.inviter, COUNT(u) FROM User u WHERE u.inviter IS NOT NULL AND u.accountStatus = 'ACTIVE' GROUP BY u.inviter ORDER BY COUNT(u) DESC")
+    List<Object[]> findTopReferrers(Pageable pageable);
 }

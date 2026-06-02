@@ -11,7 +11,6 @@ import java.util.UUID;
 public record DashboardResponse(
         // Финансовый блок
         BigDecimal balance,
-        BigDecimal pendingBonuses,
         BigDecimal totalEarned,
 
         // Команда

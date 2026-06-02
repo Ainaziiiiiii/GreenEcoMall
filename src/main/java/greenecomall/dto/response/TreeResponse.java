@@ -9,10 +9,10 @@ public record TreeResponse(
         StageStatus stageStatus,
         TreeProgress progress,
         AcceleratorInfo accelerator,
-        // Only set for Fast Start (level=0) users — their sequential queue number
         Integer fastStartNumber,
-        // Left/right branch sizes for this level's Stage-1 BFS tree
-        BranchStats branches
+        BranchStats branches,
+        /** true — пользователь зарегистрировался с более высокого уровня и пропустил этот */
+        Boolean skipped
 ) {
     @Builder
     public record TreeProgress(int filled, int total) {}

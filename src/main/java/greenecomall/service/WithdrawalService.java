@@ -90,6 +90,10 @@ public class WithdrawalService {
         return withdrawalRepository.save(w);
     }
 
+    public BigDecimal sumApprovedByUser(User user) {
+        return withdrawalRepository.sumApprovedByUser(user);
+    }
+
     private Withdrawal findOrThrow(UUID id) {
         return withdrawalRepository.findById(id)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.NOT_FOUND));

@@ -3,8 +3,12 @@ package greenecomall.enums;
 public enum AdminActionType {
     // Пользователи
     USER_BLOCKED,
+    USER_UNBLOCKED,
     USER_ACTIVATED,
     USER_CREATED,
+
+    // Платежи
+    PAYMENT_STATUS_CHANGED,
 
     // Выводы
     WITHDRAWAL_APPROVED,
@@ -14,6 +18,7 @@ public enum AdminActionType {
     ACCELERATOR_MOVED,
     STAGE2_PARTNER_MOVED,
     STAGE2_TRIGGERED,
+    USER_REPOSITIONED,
 
     // Repair
     REPAIR_TREE_POSITIONS,
@@ -33,6 +38,9 @@ public enum AdminActionType {
     NEWS_COMMENT_DELETED,
     NEWS_MEDIA_ADDED,
     NEWS_MEDIA_DELETED,
+
+    // Уведомления
+    NOTIFICATION_SENT,
 
     // Тестовые данные
     TEST_USERS_CREATED,

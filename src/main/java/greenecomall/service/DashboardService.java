@@ -35,7 +35,6 @@ public class DashboardService {
     public DashboardResponse getDashboard(User user) {
         int level = user.getCurrentLevel();
 
-        BigDecimal pending  = bonusRepository.sumByUserAndStatus(user, BonusStatus.PENDING);
         BigDecimal totalEarned = bonusRepository.sumAllByUser(user);
 
         // Tree progress
@@ -71,7 +70,6 @@ public class DashboardService {
 
         return DashboardResponse.builder()
                 .balance(user.getBalance())
-                .pendingBonuses(pending)
                 .totalEarned(totalEarned)
                 .teamSize(teamSize)
                 .currentLevel(user.getCurrentLevel())

@@ -15,6 +15,7 @@ public record UserProfileResponse(
         String firstName,
         String lastName,
         String phone,
+        String email,
         String passportNumber,
         String referralCode,
         String referralLink,
@@ -34,5 +35,8 @@ public record UserProfileResponse(
         // null for STANDARD users; sequential number in Fast Start queue for FAST_START users
         Integer fastStartNumber,
         // true if the user's Stage-1 matrix was completed with help from accelerators
-        Boolean acceleratorAssisted
+        Boolean acceleratorAssisted,
+
+        /** Presigned URL аватарки (действует 1 час), null если не установлена */
+        String avatarUrl
 ) {}

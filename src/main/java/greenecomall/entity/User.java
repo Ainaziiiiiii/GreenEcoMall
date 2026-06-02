@@ -36,6 +36,9 @@ public class User {
     @Column(nullable = false, unique = true)
     private String phone;
 
+    @Column
+    private String email;
+
     @Column(nullable = false, unique = true)
     private String passportNumber;
 
@@ -106,4 +109,7 @@ public class User {
 
     // Sequential position in the Fast Start (Level 0) queue — null for STANDARD users
     private Integer fastStartNumber;
+
+    @Column(length = 512)
+    private String avatarKey;
 }

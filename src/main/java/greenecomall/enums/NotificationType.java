@@ -7,5 +7,6 @@ public enum NotificationType {
     STAGE_COMPLETE,
     LEVEL_UP,
     ACCELERATOR_PLACED,
-    WITHDRAWAL_STATUS
+    WITHDRAWAL_STATUS,
+    ANNOUNCEMENT
 }

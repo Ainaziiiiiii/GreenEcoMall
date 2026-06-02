@@ -89,9 +89,8 @@ public class BonusController {
             description = "Возвращает: доступный баланс, сумму ожидающих/подтверждённых бонусов и разбивку по типам.")
     @GetMapping("/bonuses/summary")
     public ResponseEntity<ApiResponse<BonusSummaryResponse>> getSummary(@AuthenticationPrincipal User user) {
-        BigDecimal pending   = bonusRepository.sumByUserAndStatus(user, BonusStatus.PENDING);
-        BigDecimal confirmed = bonusRepository.sumByUserAndStatus(user, BonusStatus.CONFIRMED);
-        BigDecimal total     = bonusRepository.sumAllByUser(user);
+        BigDecimal total = bonusRepository.sumAllByUser(user);
+        BigDecimal paid  = withdrawalService.sumApprovedByUser(user);
 
         Map<String, BigDecimal> byType = new HashMap<>();
         for (BonusType t : BonusType.values()) {
@@ -102,9 +101,8 @@ public class BonusController {
 
         return ResponseEntity.ok(ApiResponse.ok(BonusSummaryResponse.builder()
                 .available(user.getBalance())
-                .pending(pending)
-                .confirmed(confirmed)
                 .total(total)
+                .paid(paid)
                 .byType(byType)
                 .build()));
     }

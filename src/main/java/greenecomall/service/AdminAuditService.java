@@ -58,11 +58,13 @@ public class AdminAuditService {
     private String label(AdminActionType t) {
         return switch (t) {
             case USER_BLOCKED                  -> "Пользователь заблокирован";
+            case USER_UNBLOCKED                -> "Пользователь разблокирован";
             case USER_ACTIVATED                -> "Пользователь активирован";
             case USER_CREATED                  -> "Пользователь создан";
             case WITHDRAWAL_APPROVED           -> "Вывод одобрен";
             case WITHDRAWAL_REJECTED           -> "Вывод отклонён";
             case ACCELERATOR_MOVED             -> "Ускоритель перемещён";
+            case USER_REPOSITIONED             -> "Пользователь переставлен в дереве вручную";
             case STAGE2_PARTNER_MOVED          -> "Партнёр Этапа 2 перемещён";
             case STAGE2_TRIGGERED              -> "Этап 2 завершён вручную";
             case REPAIR_TREE_POSITIONS         -> "Repair: позиции дерева";
@@ -80,6 +82,8 @@ public class AdminAuditService {
             case NEWS_COMMENT_DELETED          -> "Комментарий удалён";
             case NEWS_MEDIA_ADDED              -> "Медиа добавлено к новости";
             case NEWS_MEDIA_DELETED            -> "Медиа удалено из новости";
+            case PAYMENT_STATUS_CHANGED        -> "Статус платежа изменён вручную";
+            case NOTIFICATION_SENT             -> "Уведомление отправлено";
             case TEST_USERS_CREATED            -> "Тестовые пользователи созданы";
             case TEST_FAST_START_USERS_CREATED -> "Fast Start тестовые пользователи созданы";
         };

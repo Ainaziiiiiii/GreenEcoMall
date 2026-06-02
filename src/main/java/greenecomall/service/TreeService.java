@@ -53,10 +53,20 @@ public class TreeService {
             log.info("Skipping MLM placement for ADMIN user {}", newUser.getId());
             return;
         }
-        // Fast Start users (currentLevel=2) skip Level 1 and land in the Level 2 tree.
-        // Normal users use the inviter's current level.
-        int level = Math.max(inviter.getCurrentLevel(), newUser.getCurrentLevel());
-        User directParent = bfsPlace(inviter, newUser, level, 1);
+        // Новый пользователь всегда попадает на свой уровень (newUser.getCurrentLevel()).
+        // Если пригласитель на более высоком уровне — новый пользователь НЕ идёт в его матрицу.
+        // Реф-бонус пригласитель получит через externalTier1 когда завершится этап 1
+        // того, под кем стоит новый пользователь.
+        int level = newUser.getCurrentLevel();
+        // BFS стартует от пригласителя только если он на том же уровне,
+        // иначе BFS найдёт подходящий узел среди всех участников этого уровня.
+        User bfsRoot = (inviter.getCurrentLevel() == level) ? inviter : findBfsRootForLevel(level, newUser);
+        if (bfsRoot == null) {
+            log.info("No existing level-{} user to place {} under — they become the first at this level",
+                    level, newUser.getId());
+            return;
+        }
+        User directParent = bfsPlace(bfsRoot, newUser, level, 1);
 
         if (directParent == null) {
             // BFS found no free slot — user is activated but has no tree position.
@@ -73,15 +83,67 @@ public class TreeService {
 
         String msg = newUser.getFirstName() + " " + newUser.getLastName() + " присоединился к вашей команде";
 
-        // Always notify the tree root (inviter)
-        notificationService.send(inviter, NotificationType.NEW_MEMBER, "Новый участник", msg);
+        // Уведомляем инвайтера только если новый пользователь попал в его матрицу (тот же уровень).
+        // Если инвайтер на другом уровне — он получит реф-бонус позже, но "в команду" не добавился.
+        if (inviter.getCurrentLevel() == level) {
+            notificationService.send(inviter, NotificationType.NEW_MEMBER, "Новый участник", msg);
+        }
 
-        // Also notify the direct parent if different from inviter
+        // Уведомляем прямого родителя в дереве (если это не инвайтер)
         if (directParent != null && !directParent.getId().equals(inviter.getId())) {
             notificationService.send(directParent, NotificationType.NEW_MEMBER,
                     "Новый участник в вашей ветке",
                     newUser.getFirstName() + " " + newUser.getLastName() + " занял позицию под вами");
         }
+    }
+
+    /**
+     * Direct Level-N registration (level 2/3/4).
+     * Priority:
+     *   1. Inviter is at the same level Stage 1 → place in inviter's tree.
+     *   2. Global BFS: find earliest Level-N Stage-1 user with a free slot.
+     *   3. No one at Level N yet → user is the first (no tree_position needed).
+     */
+    @Transactional
+    public void placeNewDirectLevelUser(User newUser, int level) {
+        User inviter = newUser.getInviter();
+
+        // 1. Try inviter first
+        if (inviter != null
+                && inviter.getCurrentLevel() == level
+                && inviter.getCurrentStage() == 1) {
+            User directParent = bfsPlace(inviter, newUser, level, 1);
+            if (directParent != null) {
+                checkStage1UpTheChain(directParent, level);
+                notificationService.send(inviter, NotificationType.NEW_MEMBER,
+                        "Новый участник",
+                        newUser.getFirstName() + " " + newUser.getLastName() + " присоединился к вашей команде (Уровень " + level + ")");
+                return;
+            }
+        }
+
+        // 2. Global BFS across all Level-N Stage-1 users (oldest first)
+        List<User> candidates = userRepository
+                .findByCurrentLevelAndCurrentStageAndAccountStatusOrderByActivatedAtAsc(
+                        level, 1, greenecomall.enums.AccountStatus.ACTIVE);
+
+        for (User candidate : candidates) {
+            if (candidate.getId().equals(newUser.getId())) continue;
+            User directParent = bfsPlace(candidate, newUser, level, 1);
+            if (directParent != null) {
+                checkStage1UpTheChain(directParent, level);
+                notificationService.send(candidate, NotificationType.NEW_MEMBER,
+                        "Новый участник",
+                        newUser.getFirstName() + " " + newUser.getLastName() + " вошёл на Уровень " + level);
+                return;
+            }
+        }
+
+        // 3. First at this level — becomes root, placed when others join
+        log.info("Direct Level-{} user {} is first at this level — root, no placement yet", level, newUser.getId());
+        notificationService.send(newUser, NotificationType.NEW_MEMBER,
+                "Аккаунт активирован",
+                "Вы первый на Уровне " + level + "! Ждём следующих участников.");
     }
 
     /**
@@ -144,11 +206,6 @@ public class TreeService {
             if (candidate.getId().equals(locked.getId())) continue; // не ставить под самого себя
             User host = userRepository.findByIdForUpdate(candidate.getId()).orElse(candidate);
 
-            boolean leftIsLevel0  = host.getFixedPartnerLeft() != null
-                    && host.getFixedPartnerLeft().getRegistrationPlan() == RegistrationPlan.FAST_START;
-            boolean rightIsLevel0 = host.getFixedPartnerRight() != null
-                    && host.getFixedPartnerRight().getRegistrationPlan() == RegistrationPlan.FAST_START;
-
             List<TreePosition> hostAccs = treePositionRepo.findByParentAndLevelAndStage(host, 1, 2)
                     .stream().filter(TreePosition::getIsAccelerator).toList();
             boolean leftAccExists  = hostAccs.stream().anyMatch(a -> a.getPosition() == 1);
@@ -157,7 +214,7 @@ public class TreeService {
             boolean leftTaken  = host.getFixedPartnerLeft()  != null || leftAccExists;
             boolean rightTaken = host.getFixedPartnerRight() != null || rightAccExists;
 
-            if (!leftTaken && !rightIsLevel0) {
+            if (!leftTaken) {
                 host.setFixedPartnerLeft(locked);
                 userRepository.save(host);
                 notificationService.send(host, NotificationType.NEW_MEMBER,
@@ -172,7 +229,7 @@ public class TreeService {
                 return;
             }
 
-            if (!rightTaken && !leftIsLevel0) {
+            if (!rightTaken) {
                 host.setFixedPartnerRight(locked);
                 if (leftAccExists) host.setAccAssistedStage2(true);
                 userRepository.save(host);
@@ -189,6 +246,21 @@ public class TreeService {
 
         log.warn("Level 0 graduate {} could not find an eligible Stage 2 slot — will be picked up by repair job",
                 locked.getId());
+    }
+
+    /**
+     * Находит первый подходящий узел для BFS-размещения на нужном уровне.
+     * Используется когда пригласитель находится на другом уровне.
+     * Возвращает самого раннего активного участника уровня level, этапа 1.
+     */
+    private User findBfsRootForLevel(int level, User exclude) {
+        return userRepository
+                .findByCurrentLevelAndCurrentStageAndAccountStatusOrderByActivatedAtAsc(
+                        level, 1, greenecomall.enums.AccountStatus.ACTIVE)
+                .stream()
+                .filter(u -> !u.getId().equals(exclude.getId()))
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -1780,29 +1852,22 @@ public class TreeService {
             User current = queue.poll();
             if (!visited.add(current.getId())) continue;
 
+            // Accelerator cannot be placed under another accelerator — skip acc nodes entirely
             boolean currentIsAccNode = treePositionRepo
                     .countAcceleratorEntriesForUser(current.getId(), level) > 0;
+            if (currentIsAccNode) continue;
 
             List<TreePosition> allChildren = treePositionRepo.findByParentAndLevelAndStage(current, level, 1);
 
-            // For acc nodes: look only at their acc children.
-            // This keeps BFS inside the matrix (acc-entry subtree) and prevents
-            // escaping into the acc owner's own real Stage-1 subtree.
-            // Real children at the same (parent, position) coexist harmlessly —
-            // acc-counting logic already uses acc-only filter, and removeAcceleratorsUnder
-            // cleans only is_accelerator=true entries.
-            List<TreePosition> children = currentIsAccNode
-                    ? allChildren.stream().filter(TreePosition::getIsAccelerator).toList()
-                    : allChildren;
-
-            boolean hasLeft  = children.stream().anyMatch(c -> c.getPosition() == 1);
-            boolean hasRight = children.stream().anyMatch(c -> c.getPosition() == 2);
+            boolean hasLeft  = allChildren.stream().anyMatch(c -> c.getPosition() == 1);
+            boolean hasRight = allChildren.stream().anyMatch(c -> c.getPosition() == 2);
             int freeSlot = !hasLeft ? 1 : !hasRight ? 2 : 0;
 
             if (freeSlot != 0) {
-                if (!currentIsAccNode && !canAcceleratorBeCleanedUp(current, level)) {
-                    // Completed real node: skip, traverse deeper
-                    children.stream()
+                if (!canAcceleratorBeCleanedUp(current, level)) {
+                    // Completed real node: skip, traverse real children deeper
+                    allChildren.stream()
+                            .filter(c -> !c.getIsAccelerator())
                             .sorted(Comparator.comparingInt(TreePosition::getPosition))
                             .forEach(c -> queue.add(c.getUser()));
                     continue;
@@ -1820,7 +1885,9 @@ public class TreeService {
                 return true;
             }
 
-            children.stream()
+            // All slots filled — traverse only real children (don't enter acc subtrees)
+            allChildren.stream()
+                    .filter(c -> !c.getIsAccelerator())
                     .sorted(Comparator.comparingInt(TreePosition::getPosition))
                     .forEach(c -> queue.add(c.getUser()));
         }
@@ -1987,6 +2054,31 @@ public class TreeService {
 
     @Transactional(readOnly = true)
     public TreeResponse getTree(User user, int level, int stage) {
+        // Если запрошен уровень ниже стартового — пользователь его пропустил
+        int startingLevel = switch (user.getRegistrationPlan()) {
+            case FAST_START -> 1;
+            case STANDARD   -> 1;
+            case LEVEL_2    -> 2;
+            case LEVEL_3    -> 3;
+            case LEVEL_4    -> 4;
+        };
+        if (level < startingLevel) {
+            String initials = String.valueOf(user.getFirstName().charAt(0)).toUpperCase()
+                    + String.valueOf(user.getLastName().charAt(0)).toUpperCase();
+            return TreeResponse.builder()
+                    .root(TreeNodeResponse.builder()
+                            .userId(user.getId())
+                            .name(user.getFirstName() + " " + user.getLastName())
+                            .initials(initials)
+                            .stageStatus(StageStatus.WAITING)
+                            .build())
+                    .stageStatus(StageStatus.WAITING)
+                    .skipped(true)
+                    .progress(TreeResponse.TreeProgress.builder().filled(0).total(0).build())
+                    .accelerator(TreeResponse.AcceleratorInfo.builder().active(false).build())
+                    .build();
+        }
+
         // Stage 2 and 4 partners are stored as fixedPartnerLeft/Right on User, not in tree_positions
         if (stage == 2 || stage == 4) {
             return buildFixedPartnersTree(user, level, stage);
@@ -2965,5 +3057,93 @@ public class TreeService {
                     .level(level)
                     .build());
         }
+    }
+
+    /**
+     * Ручное перемещение пользователя в дереве администратором.
+     *
+     * После структурного перемещения автоматически:
+     * — для stage=1: запускает checkStage1UpTheChain от нового родителя вверх,
+     *   что включает проверку завершения матрицы, начисление бонусов и все переходы по цепочке
+     * — для stage=2: проверяет заполненность слотов нового хоста и при необходимости
+     *   вызывает onStage2Completed со всеми бонусами и переходами
+     *
+     * Старый родитель: если его этап уже был завершён — остаётся как есть (нельзя откатить).
+     * Если не был завершён — продолжает ждать (позиция у него убрана).
+     */
+    @Transactional
+    public String moveUserPosition(User user, User newParent, int newPosition, int level, int stage) {
+        if (user.getId().equals(newParent.getId())) {
+            throw new IllegalArgumentException("Нельзя поставить пользователя под самого себя");
+        }
+
+        // Найти существующую позицию
+        TreePosition pos = treePositionRepo.findByUserAndLevelAndStage(user, level, stage)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Позиция не найдена: user=" + user.getId() + " level=" + level + " stage=" + stage));
+
+        User oldParent = pos.getParent();
+        String oldDesc = oldParent.getFirstName() + " " + oldParent.getLastName()
+                + " (" + (pos.getPosition() == 1 ? "LEFT" : "RIGHT") + ")";
+
+        // Проверить что новый слот свободен
+        boolean slotTaken = treePositionRepo.findByParentAndLevelAndStage(newParent, level, stage)
+                .stream()
+                .anyMatch(tp -> !tp.getIsAccelerator()
+                        && tp.getPosition() != null
+                        && tp.getPosition() == newPosition
+                        && !tp.getUser().getId().equals(user.getId()));
+        if (slotTaken) {
+            throw new IllegalStateException(
+                    "Слот " + (newPosition == 1 ? "LEFT" : "RIGHT")
+                    + " у " + newParent.getFirstName() + " " + newParent.getLastName() + " уже занят");
+        }
+
+        // ── Этап 2: убрать fixedPartner у старого хоста ──────────────────────
+        if (stage == 2) {
+            User oldHost = userRepository.findByIdForUpdate(oldParent.getId()).orElse(oldParent);
+            if (user.getId().equals(oldHost.getFixedPartnerLeft() != null
+                    ? oldHost.getFixedPartnerLeft().getId() : null)) {
+                oldHost.setFixedPartnerLeft(null);
+            } else if (user.getId().equals(oldHost.getFixedPartnerRight() != null
+                    ? oldHost.getFixedPartnerRight().getId() : null)) {
+                oldHost.setFixedPartnerRight(null);
+            }
+            userRepository.save(oldHost);
+        }
+
+        // ── Переставить позицию ───────────────────────────────────────────────
+        pos.setParent(newParent);
+        pos.setPosition(newPosition);
+        treePositionRepo.save(pos);
+
+        // ── Этап 2: поставить fixedPartner у нового хоста + проверить завершение
+        if (stage == 2) {
+            User newHost = userRepository.findByIdForUpdate(newParent.getId()).orElse(newParent);
+            if (newPosition == 1) {
+                newHost.setFixedPartnerLeft(user);
+            } else {
+                newHost.setFixedPartnerRight(user);
+            }
+            userRepository.save(newHost);
+
+            // Перезагружаем свежие данные и проверяем завершение
+            User freshHost = userRepository.findById(newHost.getId()).orElse(newHost);
+            if (freshHost.getFixedPartnerLeft() != null && freshHost.getFixedPartnerRight() != null) {
+                onStage2Completed(freshHost, level);
+            }
+        }
+
+        // ── Этап 1: проверить завершение матрицы вверх по цепочке ────────────
+        // checkStage1UpTheChain сам рассчитает бонусы, переведёт на этап 2 и т.д.
+        if (stage == 1) {
+            checkStage1UpTheChain(newParent, level);
+        }
+
+        return "ПЕРЕМЕЩЁН: " + user.getFirstName() + " " + user.getLastName()
+                + " | БЫЛО: " + oldDesc
+                + " | СТАЛО: " + newParent.getFirstName() + " " + newParent.getLastName()
+                + " (" + (newPosition == 1 ? "LEFT" : "RIGHT") + ")"
+                + " | L" + level + " S" + stage;
     }
 }

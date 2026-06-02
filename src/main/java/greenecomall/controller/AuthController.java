@@ -166,16 +166,16 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.ok(authService.refresh(req.refreshToken())));
     }
 
-    @Operation(summary = "Забыл пароль — шаг 1: проверить кодовое слово и отправить OTP",
+    @Operation(summary = "Забыл пароль — шаг 1: отправить OTP на почту",
             description = """
-                    Принимает номер телефона и кодовое слово, заданное при регистрации.
-                    Если всё верно — отправляет SMS с OTP-кодом.
+                    Принимает номер телефона. Находит аккаунт по номеру и отправляет OTP-код на привязанную почту.
+                    В письме будет указано имя и телефон аккаунта — удобно когда одна почта у нескольких пользователей.
                     Следующий шаг: POST /reset-password с кодом и новым паролем.
                     """)
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "OTP отправлен"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Пользователь не найден", content = @Content),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "Неверное кодовое слово", content = @Content)
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "Email не указан у аккаунта", content = @Content)
     })
     @PostMapping("/forgot-password")
     public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> forgotPassword(
@@ -189,7 +189,7 @@ public class AuthController {
 
     @Operation(summary = "Забыл пароль — шаг 2: подтвердить OTP и установить новый пароль",
             description = """
-                    Принимает номер телефона, OTP-код из SMS и новый пароль.
+                    Принимает номер телефона, OTP-код из письма и новый пароль.
                     При успехе — пароль изменён, можно входить через /login.
                     """)
     @ApiResponses({

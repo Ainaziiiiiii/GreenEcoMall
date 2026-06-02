@@ -29,6 +29,12 @@ public interface BonusRepository extends JpaRepository<Bonus, UUID> {
     @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user AND b.status = :status")
     BigDecimal sumByUserAndStatus(@Param("user") User user, @Param("status") BonusStatus status);
 
+    @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user AND b.type = :type AND b.status = 'CONFIRMED'")
+    BigDecimal sumConfirmedByUserAndType(@Param("user") User user, @Param("type") BonusType type);
+
+    @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user AND b.level = :level AND b.stage = :stage AND b.status = 'CONFIRMED'")
+    BigDecimal sumConfirmedByUserAndLevelAndStage(@Param("user") User user, @Param("level") int level, @Param("stage") int stage);
+
     @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user")
     BigDecimal sumAllByUser(@Param("user") User user);
 

@@ -1,6 +1,7 @@
 package greenecomall.dto.request;
 
 import greenecomall.enums.RegistrationPlan;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -12,6 +13,9 @@ public record RegisterRequest(
         @NotBlank
         @Pattern(regexp = "\\+996\\d{9}", message = "Формат телефона: +996XXXXXXXXX")
         String phone,
+
+        @Email(message = "Некорректный email")
+        String email,
 
         @NotBlank String passportNumber,
 
@@ -25,9 +29,5 @@ public record RegisterRequest(
 
         // null → STANDARD (10 000 сом, Уровень 1)
         // FAST_START → 20 000 сом, старт с Уровня 2
-        RegistrationPlan plan,
-
-        @NotBlank(message = "Кодовое слово обязательно")
-        @Size(min = 3, message = "Кодовое слово минимум 3 символа")
-        String codeWord
+        RegistrationPlan plan
 ) {}

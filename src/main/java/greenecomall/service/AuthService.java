@@ -46,8 +46,6 @@ public class AuthService {
     private final PaymentService paymentService;
 
     private static final String REFERRAL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    private static final BigDecimal FEE_STANDARD   = new BigDecimal("1");
-    private static final BigDecimal FEE_FAST_START = new BigDecimal("1");
 
     @org.springframework.beans.factory.annotation.Value("${app.admin.referral-code:GEMADMIN}")
     private String adminReferralCode;
@@ -58,16 +56,22 @@ public class AuthService {
     @Value("${app.payment.auto-approve:false}")
     private boolean autoApprovePayment;
 
+    @Value("${app.fee.fast-start:1}") private BigDecimal feeFastStart;
+    @Value("${app.fee.level1:1}")     private BigDecimal feeLevel1;
+    @Value("${app.fee.level2:1}")     private BigDecimal feeLevel2;
+    @Value("${app.fee.level3:1}")     private BigDecimal feeLevel3;
+    @Value("${app.fee.level4:1}")     private BigDecimal feeLevel4;
+
     @Transactional
-    public LocalDateTime sendOtp(String phone, String clientIp) {
-        return smsService.sendOtp(phone);
+    public LocalDateTime sendOtp(String contact, String clientIp) {
+        return smsService.sendOtp(contact);
     }
 
     @Transactional
-    public void verifyOtp(String phone, String code) {
-        String formatted = smsService.formatPhone(phone);
+    public void verifyOtp(String contact, String code) {
+        String key = smsService.formatPhone(contact);
         OtpCode otp = otpCodeRepository
-                .findFirstByPhoneAndIsUsedFalseOrderByCreatedAtDesc(formatted)
+                .findFirstByPhoneAndIsUsedFalseOrderByCreatedAtDesc(key)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.INVALID_OTP));
 
         if (otp.getExpiresAt().isBefore(LocalDateTime.now()) || !otp.getCode().equals(code)) {
@@ -102,9 +106,20 @@ public class AuthService {
                 .orElseThrow(() -> BusinessException.of(ErrorCode.INVALID_REFERRAL_CODE));
 
         RegistrationPlan plan = req.plan() != null ? req.plan() : RegistrationPlan.STANDARD;
-        boolean fastStart = plan == RegistrationPlan.FAST_START;
-        int startingLevel = fastStart ? 0 : 1;
-        BigDecimal fee = fastStart ? FEE_FAST_START : FEE_STANDARD;
+        int startingLevel = switch (plan) {
+            case FAST_START -> 0;
+            case STANDARD   -> 1;
+            case LEVEL_2    -> 2;
+            case LEVEL_3    -> 3;
+            case LEVEL_4    -> 4;
+        };
+        BigDecimal fee = switch (plan) {
+            case FAST_START -> feeFastStart;
+            case STANDARD   -> feeLevel1;
+            case LEVEL_2    -> feeLevel2;
+            case LEVEL_3    -> feeLevel3;
+            case LEVEL_4    -> feeLevel4;
+        };
 
         User user = User.builder()
                 .firstName(req.firstName())
@@ -119,8 +134,12 @@ public class AuthService {
                 .currentLevel(startingLevel)
                 .currentStage(1)
                 .registrationPlan(plan)
-                .codeWord(req.codeWord() != null ? req.codeWord().trim().toLowerCase() : null)
+                .codeWord(null)
                 .build();
+
+        if (req.email() != null && !req.email().isBlank()) {
+            user.setEmail(req.email().toLowerCase());
+        }
 
         user = userRepository.save(user);
 
@@ -142,7 +161,7 @@ public class AuthService {
 
         return new RegisterResponse(
                 user.getId(),
-                payment.getId(),
+                autoApprovePayment ? null : payment.getId(),
                 jwtUtil.generateAccessToken(user.getId(), user.getRole()),
                 jwtUtil.generateRefreshToken(user.getId())
         );
@@ -150,24 +169,18 @@ public class AuthService {
 
     @Transactional
     public LocalDateTime forgotPassword(ForgotPasswordRequest req) {
-        String formatted = smsService.formatPhone(req.phone());
-        User user = userRepository.findByPhone(formatted)
+        User user = userRepository.findByPhone(req.phone())
                 .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
-
-        String stored = user.getCodeWord();
-        if (stored == null || !stored.equals(req.codeWord().trim().toLowerCase())) {
-            throw BusinessException.of(ErrorCode.INVALID_OTP); // reuse generic error
-        }
-
-        return smsService.sendOtp(formatted);
+        String displayName = user.getFirstName() + " " + user.getLastName();
+        return smsService.sendOtpForPasswordReset(req.phone(), displayName);
     }
 
     @Transactional
     public void resetPassword(ResetPasswordRequest req) {
-        String formatted = smsService.formatPhone(req.phone());
+        String key = smsService.formatPhone(req.phone());
 
         OtpCode otp = otpCodeRepository
-                .findFirstByPhoneAndIsUsedFalseOrderByCreatedAtDesc(formatted)
+                .findFirstByPhoneAndIsUsedFalseOrderByCreatedAtDesc(key)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.INVALID_OTP));
 
         if (otp.getExpiresAt().isBefore(LocalDateTime.now()) || !otp.getCode().equals(req.code())) {
@@ -175,7 +188,7 @@ public class AuthService {
         }
         otp.setIsUsed(true);
 
-        User user = userRepository.findByPhone(formatted)
+        User user = userRepository.findByPhone(req.phone())
                 .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
         user.setPasswordHash(passwordEncoder.encode(req.newPassword()));
         userRepository.save(user);

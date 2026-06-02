@@ -8,6 +8,10 @@ import greenecomall.dto.response.UserProfileResponse;
 import greenecomall.dto.response.UserProgressResponse;
 import greenecomall.entity.Notification;
 import greenecomall.entity.User;
+import greenecomall.enums.AccountStatus;
+import greenecomall.enums.BonusStatus;
+import greenecomall.repository.BonusRepository;
+import greenecomall.repository.UserRepository;
 import greenecomall.service.AuthService;
 import greenecomall.service.NotificationService;
 import greenecomall.service.UserService;
@@ -36,6 +40,8 @@ public class UserController {
     private final UserService userService;
     private final NotificationService notificationService;
     private final AuthService authService;
+    private final UserRepository userRepository;
+    private final BonusRepository bonusRepository;
 
     @Value("${app.base-url:https://green-eco-mall-client.up.railway.app}")
     private String baseUrl;
@@ -131,6 +137,46 @@ public class UserController {
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(ApiResponse.ok(authService.getLoginHistory(user, page, size)));
+    }
+
+    @Operation(summary = "Мои приглашённые",
+            description = """
+                    Список людей, которые зарегистрировались по реферальной ссылке текущего пользователя.
+                    Возвращает: имя, телефон, уровень, этап, статус аккаунта, аватарку и дату регистрации.
+                    """)
+    @GetMapping("/my-referrals")
+    public ResponseEntity<ApiResponse<List<java.util.Map<String, Object>>>> getMyReferrals(
+            @AuthenticationPrincipal User user) {
+
+        List<java.util.Map<String, Object>> result = userRepository.findByInviter(user)
+                .stream()
+                .map(u -> {
+                    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("id",           u.getId());
+                    m.put("firstName",    u.getFirstName());
+                    m.put("lastName",     u.getLastName());
+                    m.put("phone",        u.getPhone());
+                    m.put("currentLevel", u.getCurrentLevel());
+                    m.put("currentStage", u.getCurrentStage());
+                    m.put("accountStatus", u.getAccountStatus());
+                    m.put("registrationPlan", u.getRegistrationPlan());
+                    m.put("avatarUrl",    userService.getAvatarUrl(u));
+                    m.put("createdAt",    u.getCreatedAt());
+                    m.put("activatedAt",  u.getActivatedAt());
+                    boolean bonusReceived = bonusRepository
+                            .existsByUserAndFromUserAndStatus(user, u, BonusStatus.CONFIRMED);
+                    m.put("bonusReceived", bonusReceived);
+                    m.put("bonusAmount", bonusReceived
+                            ? bonusRepository.sumConfirmedByUserAndFromUser(user, u)
+                            : java.math.BigDecimal.ZERO);
+                    return m;
+                })
+                .sorted(java.util.Comparator.comparing(
+                        m -> (java.time.LocalDateTime) m.get("createdAt"),
+                        java.util.Comparator.reverseOrder()))
+                .toList();
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     private NotificationResponse toResponse(Notification n) {

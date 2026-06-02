@@ -26,6 +26,11 @@ public interface BonusRepository extends JpaRepository<Bonus, UUID> {
 
     List<Bonus> findByFromUserAndStatus(User fromUser, BonusStatus status);
 
+    boolean existsByUserAndFromUserAndStatus(User user, User fromUser, BonusStatus status);
+
+    @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user AND b.fromUser = :fromUser AND b.status = 'CONFIRMED'")
+    java.math.BigDecimal sumConfirmedByUserAndFromUser(@Param("user") User user, @Param("fromUser") User fromUser);
+
     @Query("SELECT COALESCE(SUM(b.amount), 0) FROM Bonus b WHERE b.user = :user AND b.status = :status")
     BigDecimal sumByUserAndStatus(@Param("user") User user, @Param("status") BonusStatus status);
 

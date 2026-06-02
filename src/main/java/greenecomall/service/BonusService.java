@@ -130,20 +130,20 @@ public class BonusService {
                                     List<User> externalTier1,
                                     List<User> tier2Members) {
 
-        // 1250 сом за каждого прямого реферала тир-1
-        if (!ownTier1.isEmpty()) {
-            BigDecimal referralBonus = MEMBER_REFERRAL.multiply(BigDecimal.valueOf(ownTier1.size()));
-            creditBonus(root, BonusType.REFERRAL_DIRECT, referralBonus, "KGS", level, 1,
-                    "Реферальный бонус за тир-1 ×" + ownTier1.size()
-                    + " (Этап 1, Уровень " + level + ")");
+        // 1250 сом за каждого прямого реферала тир-1 — по одному бонусу на человека
+        for (User member : ownTier1) {
+            creditBonus(root, BonusType.REFERRAL_DIRECT, MEMBER_REFERRAL, "KGS", level, 1,
+                    "Реферальный бонус за " + member.getFirstName() + " " + member.getLastName()
+                    + " (Этап 1, Уровень " + level + ")",
+                    member);
         }
 
-        // 625 сом за каждого тир-2 — дивиденд (не прямой реферал root)
-        if (!tier2Members.isEmpty()) {
-            BigDecimal dividendBonus = TIER2_DIVIDEND.multiply(BigDecimal.valueOf(tier2Members.size()));
-            creditBonus(root, BonusType.DIVIDEND, dividendBonus, "KGS", level, 1,
-                    "Дивиденд с тир-2 ×" + tier2Members.size()
-                    + " (Этап 1, Уровень " + level + ")");
+        // 625 сом за каждого тир-2 — дивиденд, по одному бонусу на человека
+        for (User member : tier2Members) {
+            creditBonus(root, BonusType.DIVIDEND, TIER2_DIVIDEND, "KGS", level, 1,
+                    "Дивиденд с тир-2: " + member.getFirstName() + " " + member.getLastName()
+                    + " (Этап 1, Уровень " + level + ")",
+                    member);
         }
 
         // 1250 сом инвайтеру за каждого externalTier1
@@ -153,7 +153,8 @@ public class BonusService {
                     .orElse(member.getInviter());
             creditBonus(inviter, BonusType.REFERRAL_DIRECT, MEMBER_REFERRAL, "KGS", level, 1,
                     "Реферальный бонус за " + member.getFirstName() + " " + member.getLastName()
-                    + " (Этап 1 завершил " + root.getFirstName() + " " + root.getLastName() + ")");
+                    + " (Этап 1 завершил " + root.getFirstName() + " " + root.getLastName() + ")",
+                    member);
         }
     }
 
@@ -182,8 +183,14 @@ public class BonusService {
 
     private void creditBonus(User user, BonusType type, BigDecimal amount, String currency,
                              int level, int stage, String description) {
+        creditBonus(user, type, amount, currency, level, stage, description, null);
+    }
+
+    private void creditBonus(User user, BonusType type, BigDecimal amount, String currency,
+                             int level, int stage, String description, User fromUser) {
         bonusRepository.save(Bonus.builder()
                 .user(user)
+                .fromUser(fromUser)
                 .type(type)
                 .amount(amount)
                 .currency(currency)

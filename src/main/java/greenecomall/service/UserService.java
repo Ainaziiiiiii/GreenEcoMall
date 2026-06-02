@@ -156,6 +156,10 @@ public class UserService {
         );
     }
 
+    public String getAvatarUrl(User user) {
+        return minioService.presign(user.getAvatarKey());
+    }
+
     @Transactional
     public UserProfileResponse updateProfile(User user, UpdateProfileRequest req) {
         if (req.firstName() != null && !req.firstName().isBlank())

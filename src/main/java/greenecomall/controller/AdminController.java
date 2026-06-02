@@ -79,6 +79,84 @@ public class AdminController {
     private final NewsService newsService;
     private final AdminAuditService auditService;
     private final NotificationService notificationService;
+    private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+    private final greenecomall.service.UserService userService;
+
+    @Operation(
+            summary = "Список администраторов",
+            description = "Возвращает всех пользователей с ролью ADMIN.")
+    @GetMapping("/admins")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getAdmins() {
+        List<Map<String, Object>> admins = userRepository.findAll().stream()
+                .filter(u -> u.getRole() == greenecomall.enums.Role.ADMIN)
+                .map(u -> {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("id", u.getId());
+                    m.put("firstName", u.getFirstName());
+                    m.put("lastName", u.getLastName());
+                    m.put("phone", u.getPhone());
+                    m.put("referralCode", u.getReferralCode());
+                    m.put("createdAt", u.getCreatedAt());
+                    return m;
+                })
+                .toList();
+        return ResponseEntity.ok(ApiResponse.ok(admins));
+    }
+
+    @Operation(summary = "Создать нового администратора",
+            description = "Создаёт аккаунт с ролью ADMIN. Без вступительного взноса и без матрицы.")
+    @PostMapping("/admins")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> createAdmin(
+            @Valid @RequestBody greenecomall.dto.request.CreateAdminRequest req,
+            @AuthenticationPrincipal User admin) {
+
+        if (userRepository.existsByPhone(req.phone())) {
+            throw BusinessException.of(ErrorCode.PHONE_ALREADY_EXISTS);
+        }
+
+        String referralCode = generateAdminReferralCode();
+        String passportNum  = "ADM" + System.currentTimeMillis() % 10_000_000L;
+
+        User newAdmin = User.builder()
+                .firstName(req.firstName().trim())
+                .lastName(req.lastName().trim())
+                .phone(req.phone())
+                .passportNumber(passportNum)
+                .passwordHash(passwordEncoder.encode(req.password()))
+                .referralCode(referralCode)
+                .role(greenecomall.enums.Role.ADMIN)
+                .accountStatus(AccountStatus.ACTIVE)
+                .currentLevel(1)
+                .currentStage(1)
+                .registrationPlan(greenecomall.enums.RegistrationPlan.STANDARD)
+                .build();
+
+        userRepository.save(newAdmin);
+
+        auditService.log(admin, AdminActionType.USER_CREATED, newAdmin.getId(),
+                newAdmin.getFirstName() + " " + newAdmin.getLastName(), "role=ADMIN");
+
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("id", newAdmin.getId());
+        result.put("firstName", newAdmin.getFirstName());
+        result.put("lastName", newAdmin.getLastName());
+        result.put("phone", newAdmin.getPhone());
+        result.put("referralCode", referralCode);
+
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    private String generateAdminReferralCode() {
+        java.security.SecureRandom rng = new java.security.SecureRandom();
+        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        String code;
+        do {
+            StringBuilder sb = new StringBuilder(14);
+            for (int i = 0; i < 14; i++) sb.append(chars.charAt(rng.nextInt(chars.length())));
+            code = sb.toString();
+        } while (userRepository.findByReferralCode(code).isPresent());
+        return code;
+    }
 
     @Operation(
             summary = "Список пользователей",
@@ -92,7 +170,7 @@ public class AdminController {
                     - `stage` — текущий этап: 1–4
                     """)
     @GetMapping("/users")
-    public ResponseEntity<ApiResponse<Page<User>>> getUsers(
+    public ResponseEntity<ApiResponse<Page<greenecomall.dto.response.UserProfileResponse>>> getUsers(
             @Parameter(description = "Поиск по ФИО или паспорту")
             @RequestParam(required = false) String search,
             @Parameter(description = "Статус: PENDING | ACTIVE | BLOCKED")
@@ -129,7 +207,8 @@ public class AdminController {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("currentStage"), stage));
         }
 
-        return ResponseEntity.ok(ApiResponse.ok(userRepository.findAll(spec, pageable)));
+        return ResponseEntity.ok(ApiResponse.ok(
+                userRepository.findAll(spec, pageable).map(userService::getProfile)));
     }
 
     @Operation(summary = "Карточка пользователя")
@@ -138,10 +217,11 @@ public class AdminController {
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Не найден", content = @Content)
     })
     @GetMapping("/users/{id}")
-    public ResponseEntity<ApiResponse<User>> getUser(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<greenecomall.dto.response.UserProfileResponse>> getUser(
+            @PathVariable UUID id) {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.USER_NOT_FOUND));
-        return ResponseEntity.ok(ApiResponse.ok(user));
+        return ResponseEntity.ok(ApiResponse.ok(userService.getProfile(user)));
     }
 
     @Operation(summary = "Заблокировать пользователя")

@@ -112,8 +112,8 @@ public class SwaggerConfig {
                                 | 3 | вся команда на Этапе 3 | → Этап 4, бонус 25 000 сом |
                                 | 4 | оба партнёра на Этапе 4 | → следующий уровень |
                                 """))
-                .servers(List.of(
-                        new Server().url("https://greenecomall-dev.up.railway.app").description("Dev")))
+//                .servers(List.of(
+//                        new Server().url("https://greenecomall-dev.up.railway.app").description("Dev")))
                 .tags(List.of(
                         new Tag().name("1. Auth").description("Регистрация и вход — начни здесь"),
                         new Tag().name("2. Payment").description("Оплата вступительного взноса"),
